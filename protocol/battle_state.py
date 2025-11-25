@@ -58,7 +58,6 @@ def calculate_damage(state, move):
     
     # 3. The formula
     # Damage = Power * (Atk / Def) * Multiplier
-    print(move.base_power)
     raw_damage = (move.base_power * atk * multiplier) / defense
     
     final_damage = int(raw_damage)
