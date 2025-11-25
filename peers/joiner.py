@@ -1,5 +1,6 @@
 import socket
 from protocol.messages import encode_message, decode_message
+from protocol.reliability import ReliableChannel
 
 # Settings
 HOST_IP = "127.0.0.1"
@@ -11,6 +12,9 @@ print("Starting the joiner...")
 # Make a socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+# Use our new reliable channel
+channel = ReliableChannel(s)
+
 # Prepare the handshake message
 handshake = {
     "message_type": "HANDSHAKE_REQUEST",
@@ -18,16 +22,22 @@ handshake = {
     "player_name": "TestJoiner"
 }
 
-print("Encoding handshake message...")
-encoded_handshake = encode_message(handshake)
+print("Sending handshake reliably...")
 
-# Send it to the host
-print("Sending to host at " + HOST_IP + ":" + str(HOST_PORT))
-s.sendto(encoded_handshake.encode("utf-8"), (HOST_IP, HOST_PORT))
+# Send it with ACK
+success = channel.send_with_ack(handshake, (HOST_IP, HOST_PORT))
 
-# Wait for a reply
-print("Waiting for response...")
-s.settimeout(5.0) # Wait for 5 seconds max
+if success:
+    print("Handshake sent and ACK received!")
+else:
+    print("Could not send handshake reliably.")
+    exit()
+
+# Wait for a reply (HANDSHAKE_RESPONSE)
+# Note: The response itself is not sent reliably in this simple version,
+# we just wait for it.
+print("Waiting for response from host...")
+s.settimeout(5.0)
 
 try:
     data, address = s.recvfrom(BUFFER)
