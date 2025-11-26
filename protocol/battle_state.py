@@ -60,7 +60,7 @@ def calculate_damage(state, move):
     # Damage = (Atk * Multiplier)  / Def
     raw_damage = (atk * multiplier) / defense
     
-    final_damage = int(raw_damage)
+    final_damage = int(round(raw_damage))
     
     # Making sure we do at least 1 damage if it's effective
     if final_damage <= 0:
