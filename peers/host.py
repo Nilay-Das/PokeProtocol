@@ -13,9 +13,7 @@ class Host:
         self.running = False
         self.name = ""
 
-    # ---------------------------------------------------------
-    #  THREAD: background listener
-    # ---------------------------------------------------------
+    #thread to receive messages
     def _accept_loop(self):
         while self.running:
             try:
@@ -25,9 +23,8 @@ class Host:
 
             self.request_queue.put((msg.decode(), addr))
 
-    # ---------------------------------------------------------
-    #  Send newline-separated key-value pairs to a peer
-    # ---------------------------------------------------------
+    
+    #general message function to send messages to joiner and spectator if it exists
     def send_kv(self, addr, **kwargs):
 
         lines = [f"{k}={v}" for k, v in kwargs.items()]
@@ -38,9 +35,7 @@ class Host:
         if self.spect and self.saddr != addr:
             self.sock.sendto(message.encode(), self.saddr)
 
-    # ---------------------------------------------------------
-    #  Main accept loop
-    # ---------------------------------------------------------
+    # need to change this, main loop for accepting peers
     def accept(self):
 
         self.name = input("Name this Peer\n")
@@ -63,9 +58,6 @@ class Host:
         listener = threading.Thread(target=self._accept_loop, daemon=True)
         listener.start()
 
-        # ---------------------------------------------------------
-        #  MAIN LOOP
-        # ---------------------------------------------------------
         while True:
             if not self.request_queue.empty():
                 msg, addr = self.request_queue.get()
@@ -73,19 +65,16 @@ class Host:
                 print(f"\nPeer at {addr} sent:")
                 print(msg)
 
-                # ---------------------------
-                # Spectator handshake
-                # ---------------------------
+                #auto accepts spectators, for now only has 1 max
                 if "message_type=SPECTATOR_REQUEST" in msg:
-                    self.saddr = addr
-                    self.send_kv(addr, message_type="HANDSHAKE_RESPONSE")
-                    self.spect = True
-                    print("Spectator connected.")
-                    continue
+                    if self.spect != True:
+                        self.saddr = addr
+                        self.send_kv(addr, message_type="HANDSHAKE_RESPONSE")
+                        self.spect = True
+                        print("Spectator connected.")
+                        continue
 
-                # ---------------------------
-                # Normal peer request
-                # ---------------------------
+               #joiner request
                 choice = input("Accept (Y/N)? ").strip().upper()
                 if choice != "Y":
                     print("Peer rejected.")
@@ -98,7 +87,7 @@ class Host:
                     except:
                         print("Invalid seed.")
 
-                # Send handshake response using KV pairs
+                # send message, follow this format for send the key value pairs
                 self.send_kv(addr, message_type="HANDSHAKE_RESPONSE", seed=seed)
 
                 print("Handshake sent.\n")
