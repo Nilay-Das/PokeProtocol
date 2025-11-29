@@ -157,7 +157,8 @@ class host:
                     send = {
                         "message_type": "CHAT_MESSAGE",
                         "sender_name": self.name,
-                        "content_type": chatmsg,
+                        "content_type": "TEXT",
+                        "message_text": chatmsg
                     }
                     self.reliability.send_with_ack(send, self.jaddr)
 
