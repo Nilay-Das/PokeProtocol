@@ -2,8 +2,8 @@ import socket
 import threading
 import queue
 
-
 class Host:
+
     saddr = None
     spect = False
 
@@ -13,22 +13,34 @@ class Host:
         self.running = False
         self.name = ""
 
+    # ---------------------------------------------------------
+    #  THREAD: background listener
+    # ---------------------------------------------------------
     def _accept_loop(self):
-        """Background thread: NO input() here."""
         while self.running:
             try:
                 msg, addr = self.sock.recvfrom(1024)
             except OSError:
                 break
 
-            # Push request to queue
             self.request_queue.put((msg.decode(), addr))
 
-    def response(self, message, addr):
+    # ---------------------------------------------------------
+    #  Send newline-separated key-value pairs to a peer
+    # ---------------------------------------------------------
+    def send_kv(self, addr, **kwargs):
+
+        lines = [f"{k}={v}" for k, v in kwargs.items()]
+        message = "\n".join(lines)
         self.sock.sendto(message.encode(), addr)
-        if self.spect:
+
+        # mirror to spectator if active
+        if self.spect and self.saddr != addr:
             self.sock.sendto(message.encode(), self.saddr)
 
+    # ---------------------------------------------------------
+    #  Main accept loop
+    # ---------------------------------------------------------
     def accept(self):
 
         self.name = input("Name this Peer\n")
@@ -48,23 +60,32 @@ class Host:
         print(f"{self.name} Listening on port {port}")
 
         self.running = True
-        thread = threading.Thread(target=self._accept_loop)
-        thread.start()
+        listener = threading.Thread(target=self._accept_loop, daemon=True)
+        listener.start()
 
-        # Main loop handles input
+        # ---------------------------------------------------------
+        #  MAIN LOOP
+        # ---------------------------------------------------------
         while True:
             if not self.request_queue.empty():
                 msg, addr = self.request_queue.get()
 
-                print(f"\nPeer at {addr} wants to join")
+                print(f"\nPeer at {addr} sent:")
                 print(msg)
 
-                if msg == "message type: SPECTATOR_REQUEST":
+                # ---------------------------
+                # Spectator handshake
+                # ---------------------------
+                if "message_type=SPECTATOR_REQUEST" in msg:
                     self.saddr = addr
-                    self.sock.sendto(b"message type: HANDSHAKE_RESPONSE", self.saddr)
+                    self.send_kv(addr, message_type="HANDSHAKE_RESPONSE")
                     self.spect = True
+                    print("Spectator connected.")
                     continue
 
+                # ---------------------------
+                # Normal peer request
+                # ---------------------------
                 choice = input("Accept (Y/N)? ").strip().upper()
                 if choice != "Y":
                     print("Peer rejected.")
@@ -77,11 +98,12 @@ class Host:
                     except:
                         print("Invalid seed.")
 
-                self.response("message type: HANDSHAKE_RESPONSE", addr)
-                self.response(f"seed: {seed}", addr)
+                # Send handshake response using KV pairs
+                self.send_kv(addr, message_type="HANDSHAKE_RESPONSE", seed=seed)
 
                 print("Handshake sent.\n")
 
+        # unreachable unless main loop exits
         self.running = False
         self.sock.close()
-        thread.join()
+        listener.join()
