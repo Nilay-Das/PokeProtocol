@@ -1,19 +1,24 @@
 import socket
 import threading
 import queue
+import time
 
-class Host:
+class host:
 
     saddr = None
     spect = False
+    jaddr = None
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    request_queue = queue.Queue()
+    kv_messages = []
+    lock = threading.Lock()
+    listening = True
+    running = False
+    name = ""
+    seq = 0
+    ack = None
 
-    def __init__(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.request_queue = queue.Queue()
-        self.running = False
-        self.name = ""
-
-    #thread to receive messages
+    #loop for accepting peers, ends when the game begins
     def _accept_loop(self):
         while self.running:
             try:
@@ -23,11 +28,9 @@ class Host:
 
             self.request_queue.put((msg.decode(), addr))
 
-    
-    #general message function to send messages to joiner and spectator if it exists
     def send_kv(self, addr, **kwargs):
 
-        lines = [f"{k}={v}" for k, v in kwargs.items()]
+        lines = [f"{k}: {v}" for k, v in kwargs.items()]
         message = "\n".join(lines)
         self.sock.sendto(message.encode(), addr)
 
@@ -35,7 +38,68 @@ class Host:
         if self.spect and self.saddr != addr:
             self.sock.sendto(message.encode(), self.saddr)
 
-    # need to change this, main loop for accepting peers
+    def parse_kv(self, raw):
+        kv = {}
+        for line in raw.splitlines():
+            if ":" in line:
+                key, val = line.split(":", 1)
+            else:
+                continue
+            kv[key.strip()] = val.strip()
+        return kv
+
+    def listen_loop(self):
+        while self.listening:
+            try:
+                msg, addr = self.sock.recvfrom(1024)
+            except OSError:
+                break
+
+            decoded = msg.decode()
+            print(f"Host Received:\n{decoded}")
+
+            kv = self.parse_kv(decoded)
+
+            # Store message
+            with self.lock:
+                self.kv_messages.append(kv)
+
+            # Detect and handle multiple message types
+            if kv.get("message_type") == "HANDSHAKE_RESPONSE":
+                if "seed" in kv:
+                    self.seed = int(kv["seed"])
+                    print(f"Set seed to {self.seed}")
+
+            if "sequence_number" in kv:
+                incoming_seq = int(kv["sequence_number"])
+
+                if incoming_seq == self.seq:
+                    self.seq += 1
+
+                self.send_kv(self.jaddr, ack_number=self.seq)
+
+            if "ack_number" in kv:
+                self.ack = int(kv["ack_number"])
+
+
+            if "message_type: SPECTATOR_REQUEST" in kv:
+                self.saddr = addr
+                self.send_kv(addr, message_type="HANDSHAKE_RESPONSE")
+                self.spect = True
+                print("Spectator connected.")
+    def chat(self, **kwargs):
+        tries = 0
+        cur_ack = self.ack
+        while tries < 4:
+            self.send_kv(self.jaddr, **kwargs)
+            time.sleep(0.5)
+            if cur_ack != self.ack:
+                return
+            else:
+                tries += 1
+        print("Connection lost, ending game")
+        self.running = False
+
     def accept(self):
 
         self.name = input("Name this Peer\n")
@@ -65,20 +129,13 @@ class Host:
                 print(f"\nPeer at {addr} sent:")
                 print(msg)
 
-                #auto accepts spectators, for now only has 1 max
-                if "message_type=SPECTATOR_REQUEST" in msg:
-                    if self.spect != True:
-                        self.saddr = addr
-                        self.send_kv(addr, message_type="HANDSHAKE_RESPONSE")
-                        self.spect = True
-                        print("Spectator connected.")
-                        continue
-
-               #joiner request
                 choice = input("Accept (Y/N)? ").strip().upper()
                 if choice != "Y":
                     print("Peer rejected.")
                     continue
+
+                self.jaddr = addr
+                self.running = False
 
                 seed = -1
                 while seed < 0:
@@ -87,12 +144,17 @@ class Host:
                     except:
                         print("Invalid seed.")
 
-                # send message, follow this format for send the key value pairs
+                # Send handshake response using KV pairs
                 self.send_kv(addr, message_type="HANDSHAKE_RESPONSE", seed=seed)
-
                 print("Handshake sent.\n")
 
-        # unreachable unless main loop exits
+                while True:
+                    l = threading.Thread(target=self.listen_loop, daemon=True)
+                    l.start()
+                    chatmsg = input("Type a message:\n")
+                    self.chat(message_type="CHAT_MESSAGE", sender_name=self.name,
+                              content_type="TEXT", message_text=chatmsg, sequence_number=self.seq)
+
         self.running = False
         self.sock.close()
         listener.join()
