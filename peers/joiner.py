@@ -31,22 +31,6 @@ class joiner:
 
         return True
 
-    def parse_kv(self, raw):
-        kv = {}
-        for line in raw.splitlines():
-            if ":" in line:
-                key, val = line.split(":", 1)
-            else:
-                continue
-            kv[key.strip()] = val.strip()
-        return kv
-
-    def send_kv(self, addr, **kwargs):
-
-        lines = [f"{k}: {v}" for k, v in kwargs.items()]
-        message = "\n".join(lines)
-        self.sock.sendto(message.encode(), addr)
-
     def listen_loop(self):
         while self.running:
             try:
@@ -71,27 +55,18 @@ class joiner:
 
                 if incoming_seq == self.seq + 1:
                     self.seq += 1
-
-                self.send_kv(self.host_addr,message_type="ACK", ack_number=self.seq)
+                ackmsg = encode_message({
+                    "message_type": "ACK",
+                    "ack_number": self.seq
+                })
+                self.sock.sendto(ackmsg.encode("utf-8"), self.host_addr)
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
 
     def handshake(self, host_ip, host_port):
         self.host_addr = (host_ip, host_port)
-        self.send_kv(self.host_addr, message_type="HANDSHAKE_REQUEST")
-
-    def chat(self, **kwargs):
-        tries = 0
-        cur_ack = self.ack
-        while tries < 4:
-            self.send_kv(self.host_addr, **kwargs)
-            time.sleep(0.5)
-            if cur_ack != self.ack:
-                return
-            else:
-                tries += 1
-        print("Connection lost, ending game")
-        self.running = False
+        handshake = encode_message({"message_type":"HANDSHAKE_REQUEST"})
+        self.sock.sendto(handshake.encode("utf-8"), self.host_addr)
 
     def start(self, host_ip, host_port):
         reliability = self.reliability

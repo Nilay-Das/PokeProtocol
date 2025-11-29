@@ -41,16 +41,6 @@ class host:
         if self.spect and self.saddr != addr:
             self.sock.sendto(message.encode(), self.saddr)
 
-    def parse_kv(self, raw):
-        kv = {}
-        for line in raw.splitlines():
-            if ":" in line:
-                key, val = line.split(":", 1)
-            else:
-                continue
-            kv[key.strip()] = val.strip()
-        return kv
-
     def listen_loop(self):
         while self.listening:
             try:
@@ -79,29 +69,22 @@ class host:
                 if incoming_seq == self.seq + 1:
                     self.seq += 1
 
-                self.send_kv(self.jaddr,message_type= "ACK", ack_number=self.seq)
+                ackmsg = encode_message({
+                    "message_type": "ACK",
+                    "ack_number": self.seq
+                })
+                self.sock.sendto(ackmsg.encode("utf-8"), self.jaddr)
 
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
 
-
             if "message_type: SPECTATOR_REQUEST" in kv:
-                self.saddr = addr
-                self.send_kv(addr, message_type="HANDSHAKE_RESPONSE")
-                self.spect = True
-                print("Spectator connected.")
-    def chat(self, **kwargs):
-        tries = 0
-        cur_ack = self.ack
-        while tries < 4:
-            self.send_kv(self.jaddr, **kwargs)
-            time.sleep(0.5)
-            if cur_ack != self.ack:
-                return
-            else:
-                tries += 1
-        print("Connection lost, ending game")
-        self.running = False
+                if self.spect != True:
+                    self.saddr = addr
+                    response = encode_message({"message_type": "HANDSHAKE_RESPONSE"})
+                    self.sock.sendto(response.encode("utf-8"), addr)
+                    self.spect = True
+                    print("Spectator connected.")
 
     def accept(self):
         self.name = input("Name this Peer\n")
@@ -147,7 +130,8 @@ class host:
                         print("Invalid seed.")
 
                 # Send handshake response using KV pairs
-                self.send_kv(addr, message_type="HANDSHAKE_RESPONSE", seed=seed)
+                handshake = encode_message({"message_type": "HANDSHAKE_RESPONSE", "seed": seed})
+                self.sock.sendto(handshake.encode("utf-8"), addr)
                 print("Handshake sent.\n")
 
                 while True:
