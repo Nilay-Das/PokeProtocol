@@ -1,55 +1,119 @@
 import socket
-from protocol.messages import encode_message, decode_message
-from protocol.reliability import ReliableChannel
+import threading
+import time
+import queue
 
-# Settings
-HOST_IP = "127.0.0.1"
-HOST_PORT = 5000
-BUFFER = 4096
+class joiner:
+    #attributes
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    name = "Joiner"
+    request_queue = queue.Queue()
+    running = False
+    host_addr = None
+    kv_messages = []
+    lock = threading.Lock()
+    seed = None
+    seq = 0
+    ack = None
 
-print("Starting the joiner...")
 
-# Make a socket
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def wait_for_seed(self, timeout=None):
 
-# Use our new reliable channel
-channel = ReliableChannel(s)
+        start = time.time()
 
-# Prepare the handshake message
-handshake = {
-    "message_type": "HANDSHAKE_REQUEST",
-    "role": "JOINER",
-    "player_name": "TestJoiner"
-}
+        while self.seed is None:
+            time.sleep(0.05)
+            if timeout is not None and (time.time() - start) > timeout:
+                return False
 
-print("Sending handshake reliably...")
+        return True
 
-# Send it with ACK
-success = channel.send_with_ack(handshake, (HOST_IP, HOST_PORT))
+    def parse_kv(self, raw):
+        kv = {}
+        for line in raw.splitlines():
+            if ":" in line:
+                key, val = line.split(":", 1)
+            else:
+                continue
+            kv[key.strip()] = val.strip()
+        return kv
 
-if success:
-    print("Handshake sent and ACK received!")
-else:
-    print("Could not send handshake reliably.")
-    exit()
+    def send_kv(self, addr, **kwargs):
 
-# Wait for a reply (HANDSHAKE_RESPONSE)
-# Note: The response itself is not sent reliably in this simple version,
-# we just wait for it.
-print("Waiting for response from host...")
-s.settimeout(5.0)
+        lines = [f"{k}: {v}" for k, v in kwargs.items()]
+        message = "\n".join(lines)
+        self.sock.sendto(message.encode(), addr)
 
-try:
-    data, address = s.recvfrom(BUFFER)
-    text = data.decode("utf-8")
-    
-    print("\nGot a response from host:")
-    print(text)
-    print("---")
-    
-    decoded = decode_message(text)
-    print("Decoded response:")
-    print(decoded)
-    
-except socket.timeout:
-    print("Error: Host did not reply in time.")
+    def listen_loop(self):
+        while self.running:
+            try:
+                msg, addr = self.sock.recvfrom(1024)
+            except OSError:
+                break
+
+            decoded = msg.decode()
+            print(f"[Joiner] Received:\n{decoded}")
+
+            kv = self.parse_kv(decoded)
+
+            # Store message
+            with self.lock:
+                self.kv_messages.append(kv)
+
+            # Detect and handle multiple message types
+            if "seed" in kv:
+                self.seed = int(kv["seed"])
+            if "sequence_number" in kv:
+                incoming_seq = int(kv["sequence_number"])
+
+                if incoming_seq == self.seq:
+                    self.seq += 1
+
+                self.send_kv(self.host_addr, ack_number=self.seq)
+            if "ack_number" in kv:
+                self.ack = int(kv["ack_number"])
+
+
+    def handshake(self, host_ip, host_port):
+        self.host_addr = (host_ip, host_port)
+        self.send_kv(self.host_addr, message_type="HANDSHAKE_REQUEST")
+
+    def chat(self, **kwargs):
+        tries = 0
+        cur_ack = self.ack
+        while tries < 4:
+            self.send_kv(self.host_addr, **kwargs)
+            time.sleep(0.5)
+            if cur_ack != self.ack:
+                return
+            else:
+                tries += 1
+        print("Connection lost, ending game")
+        self.running = False
+
+    def start(self, host_ip, host_port):
+
+        # bind local ephemeral port
+        self.sock.bind(("", 0))
+        print(f"[Joiner] Using port {self.sock.getsockname()[1]}")
+
+        self.running = True
+        t = threading.Thread(target=self.listen_loop, daemon=True)
+        t.start()
+
+        # Send handshake request
+        self.handshake(host_ip, host_port)
+
+        print("[Joiner] Handshake sent. Waiting for Host...")
+        print("If host has not sent seed please Ctrl+C to end program")
+
+        while self.seed is None:
+            time.sleep(0.5)
+
+        while True:
+
+            chatmsg = input("Type a message:\n")
+            self.chat(message_type="CHAT_MESSAGE", sender_name=self.name,
+                      content_type="TEXT", message_text=chatmsg, sequence_number=self.seq)
+
+
