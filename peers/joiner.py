@@ -20,17 +20,6 @@ class joiner:
     ack = None
     reliability = ReliableChannel(sock)
 
-    def wait_for_seed(self, timeout=None):
-
-        start = time.time()
-
-        while self.seed is None:
-            time.sleep(0.05)
-            if timeout is not None and (time.time() - start) > timeout:
-                return False
-
-        return True
-
     def listen_loop(self):
         while self.running:
             try:

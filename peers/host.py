@@ -31,16 +31,6 @@ class host:
 
             self.request_queue.put((msg.decode(), addr))
 
-    def send_kv(self, addr, **kwargs):
-
-        lines = [f"{k}: {v}" for k, v in kwargs.items()]
-        message = "\n".join(lines)
-        self.sock.sendto(message.encode(), addr)
-
-        # mirror to spectator if active
-        if self.spect and self.saddr != addr:
-            self.sock.sendto(message.encode(), self.saddr)
-
     def listen_loop(self):
         while self.listening:
             try:
