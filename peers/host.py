@@ -17,7 +17,7 @@ class host:
     listening = True
     running = False
     name = ""
-    seq = 0
+    seq = 1
     ack = None
     reliability = ReliableChannel(sock)
 
@@ -76,7 +76,7 @@ class host:
             if "sequence_number" in kv:
                 incoming_seq = int(kv["sequence_number"])
 
-                if incoming_seq == self.seq:
+                if incoming_seq == self.seq + 1:
                     self.seq += 1
 
                 self.send_kv(self.jaddr,message_type= "ACK", ack_number=self.seq)

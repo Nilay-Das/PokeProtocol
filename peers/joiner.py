@@ -16,7 +16,7 @@ class joiner:
     kv_messages = []
     lock = threading.Lock()
     seed = None
-    seq = 0
+    seq = 1
     ack = None
     reliability = ReliableChannel(sock)
 
@@ -69,7 +69,7 @@ class joiner:
             if "sequence_number" in kv:
                 incoming_seq = int(kv["sequence_number"])
 
-                if incoming_seq == self.seq:
+                if incoming_seq == self.seq + 1:
                     self.seq += 1
 
                 self.send_kv(self.host_addr,message_type="ACK", ack_number=self.seq)
