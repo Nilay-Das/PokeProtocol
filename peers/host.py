@@ -2,6 +2,8 @@ import socket
 import threading
 import queue
 import time
+from protocol.messages import *
+from protocol.reliability import ReliableChannel
 
 class host:
 
@@ -17,6 +19,7 @@ class host:
     name = ""
     seq = 0
     ack = None
+    reliability = ReliableChannel(sock)
 
     #loop for accepting peers, ends when the game begins
     def _accept_loop(self):
@@ -58,7 +61,7 @@ class host:
             decoded = msg.decode()
             print(f"Host Received:\n{decoded}")
 
-            kv = self.parse_kv(decoded)
+            kv = decode_message(decoded)
 
             # Store message
             with self.lock:
@@ -76,7 +79,7 @@ class host:
                 if incoming_seq == self.seq:
                     self.seq += 1
 
-                self.send_kv(self.jaddr, ack_number=self.seq)
+                self.send_kv(self.jaddr,message_type= "ACK", ack_number=self.seq)
 
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
@@ -101,7 +104,6 @@ class host:
         self.running = False
 
     def accept(self):
-
         self.name = input("Name this Peer\n")
 
         print("Enter a port (>5000):")
@@ -152,8 +154,12 @@ class host:
                     l = threading.Thread(target=self.listen_loop, daemon=True)
                     l.start()
                     chatmsg = input("Type a message:\n")
-                    self.chat(message_type="CHAT_MESSAGE", sender_name=self.name,
-                              content_type="TEXT", message_text=chatmsg, sequence_number=self.seq)
+                    send = {
+                        "message_type": "CHAT_MESSAGE",
+                        "sender_name": self.name,
+                        "content_type": chatmsg,
+                    }
+                    self.reliability.send_with_ack(send, self.jaddr)
 
         self.running = False
         self.sock.close()

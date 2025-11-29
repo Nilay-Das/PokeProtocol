@@ -1,16 +1,16 @@
 from protocol.battle_state import Move, BattleState, calculate_damage, apply_damage
 from protocol.pokemon_db import load_pokemon_db
 
-import host
-import joiner
+from peers.host import host
+from peers.joiner import joiner
 
 print("--- Pokemon Battle Simulator ---")
 
 # Load the database
 db = load_pokemon_db()
 
-host = host.host()
-joiner = joiner.joiner()
+host = host()
+joiner = joiner()
 #spectator = Spectator.Spectator()
 print("h for host, j for joiner, s for spectator(not yet implemented)")
 print("For host, please just use port 5001 this is a test for now")

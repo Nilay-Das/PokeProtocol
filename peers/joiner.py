@@ -2,6 +2,9 @@ import socket
 import threading
 import time
 import queue
+from protocol.messages import *
+from protocol.reliability import ReliableChannel
+
 
 class joiner:
     #attributes
@@ -15,7 +18,7 @@ class joiner:
     seed = None
     seq = 0
     ack = None
-
+    reliability = ReliableChannel(sock)
 
     def wait_for_seed(self, timeout=None):
 
@@ -54,7 +57,7 @@ class joiner:
             decoded = msg.decode()
             print(f"[Joiner] Received:\n{decoded}")
 
-            kv = self.parse_kv(decoded)
+            kv = decode_message(decoded)
 
             # Store message
             with self.lock:
@@ -69,10 +72,9 @@ class joiner:
                 if incoming_seq == self.seq:
                     self.seq += 1
 
-                self.send_kv(self.host_addr, ack_number=self.seq)
+                self.send_kv(self.host_addr,message_type="ACK", ack_number=self.seq)
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
-
 
     def handshake(self, host_ip, host_port):
         self.host_addr = (host_ip, host_port)
@@ -92,7 +94,7 @@ class joiner:
         self.running = False
 
     def start(self, host_ip, host_port):
-
+        reliability = self.reliability
         # bind local ephemeral port
         self.sock.bind(("", 0))
         print(f"[Joiner] Using port {self.sock.getsockname()[1]}")
@@ -113,7 +115,12 @@ class joiner:
         while True:
 
             chatmsg = input("Type a message:\n")
-            self.chat(message_type="CHAT_MESSAGE", sender_name=self.name,
-                      content_type="TEXT", message_text=chatmsg, sequence_number=self.seq)
+            send = {
+                "message_type": "CHAT_MESSAGE",
+                "sender_name": self.name,
+                "content_type": chatmsg,
+            }
+
+            self.reliability.send_with_ack(send, self.host_addr)
 
 
