@@ -20,7 +20,7 @@ class ReliableChannel:
             self.sock.sendto(data, address)
             
             # Wait for ACK
-            self.sock.settimeout(2.0)
+            self.sock.settimeout(3.0)
             
             try:
                 # Listen for response
@@ -32,6 +32,7 @@ class ReliableChannel:
                 
                 # Check if it is an ACK
                 if response_msg.get("message_type") == "ACK":
+                    print(f"Expected ack {self.seq_num}") #debugging
                     if response_msg.get("ack_number") == str(self.seq_num):
                         print("Got the ACK! Message delivered.")
                         self.seq_num = self.seq_num + 1
@@ -41,6 +42,7 @@ class ReliableChannel:
                         print("Got an ACK but for the wrong number.")
                 else:
                     print("Got a message but it was not an ACK.")
+                    print(f"Received message: \n{response_msg}") #debugging
                     
             except socket.timeout:
                 print("Timed out waiting for ACK.")

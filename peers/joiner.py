@@ -20,6 +20,27 @@ class joiner:
     ack = None
     reliability = ReliableChannel(sock)
 
+    def start(self, host_ip, host_port):
+        # bind local ephemeral port
+        self.sock.bind(("", 0))
+        print(f"[Joiner] Using port {self.sock.getsockname()[1]}")
+
+        self.running = True
+        t = threading.Thread(target=self.listen_loop, daemon=True)
+        t.start()
+
+        # Send handshake request
+        self.handshake(host_ip, host_port)
+
+        print("[Joiner] Handshake sent. Waiting for Host...")
+        print("If host has not sent seed please Ctrl+C to end program")
+
+        while self.seed is None:
+            time.sleep(0.5)
+
+        while True:
+            self.chat()
+
     def listen_loop(self):
         while self.running:
             try:
@@ -57,35 +78,15 @@ class joiner:
         handshake = encode_message({"message_type":"HANDSHAKE_REQUEST"})
         self.sock.sendto(handshake.encode("utf-8"), self.host_addr)
 
-    def start(self, host_ip, host_port):
-        reliability = self.reliability
-        # bind local ephemeral port
-        self.sock.bind(("", 0))
-        print(f"[Joiner] Using port {self.sock.getsockname()[1]}")
+    def chat(self):
+        chatmsg = input("Type a message:\n")
+        send = {
+            "message_type": "CHAT_MESSAGE",
+            "sender_name": self.name,
+            "content_type": "TEXT",
+            "message_text": chatmsg
+        }
 
-        self.running = True
-        t = threading.Thread(target=self.listen_loop, daemon=True)
-        t.start()
-
-        # Send handshake request
-        self.handshake(host_ip, host_port)
-
-        print("[Joiner] Handshake sent. Waiting for Host...")
-        print("If host has not sent seed please Ctrl+C to end program")
-
-        while self.seed is None:
-            time.sleep(0.5)
-
-        while True:
-
-            chatmsg = input("Type a message:\n")
-            send = {
-                "message_type": "CHAT_MESSAGE",
-                "sender_name": self.name,
-                "content_type": "TEXT",
-                "message_text": chatmsg
-            }
-
-            self.reliability.send_with_ack(send, self.host_addr)
+        self.reliability.send_with_ack(send, self.host_addr)
 
 

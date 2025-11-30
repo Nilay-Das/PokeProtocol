@@ -11,6 +11,7 @@ class host:
     spect = False
     jaddr = None
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    seed = 0
     request_queue = queue.Queue()
     kv_messages = []
     lock = threading.Lock()
@@ -20,61 +21,6 @@ class host:
     seq = 1
     ack = None
     reliability = ReliableChannel(sock)
-
-    #loop for accepting peers, ends when the game begins
-    def _accept_loop(self):
-        while self.running:
-            try:
-                msg, addr = self.sock.recvfrom(1024)
-            except OSError:
-                break
-
-            self.request_queue.put((msg.decode(), addr))
-
-    def listen_loop(self):
-        while self.listening:
-            try:
-                msg, addr = self.sock.recvfrom(1024)
-            except OSError:
-                break
-
-            decoded = msg.decode()
-            print(f"Host Received:\n{decoded}")
-
-            kv = decode_message(decoded)
-
-            # Store message
-            with self.lock:
-                self.kv_messages.append(kv)
-
-            # Detect and handle multiple message types
-            if kv.get("message_type") == "HANDSHAKE_RESPONSE":
-                if "seed" in kv:
-                    self.seed = int(kv["seed"])
-                    print(f"Set seed to {self.seed}")
-
-            if "sequence_number" in kv:
-                incoming_seq = int(kv["sequence_number"])
-
-                if incoming_seq == self.seq + 1:
-                    self.seq += 1
-
-                ackmsg = encode_message({
-                    "message_type": "ACK",
-                    "ack_number": self.seq
-                })
-                self.sock.sendto(ackmsg.encode("utf-8"), self.jaddr)
-
-            if "ack_number" in kv:
-                self.ack = int(kv["ack_number"])
-
-            if "message_type: SPECTATOR_REQUEST" in kv:
-                if self.spect != True:
-                    self.saddr = addr
-                    response = encode_message({"message_type": "HANDSHAKE_RESPONSE"})
-                    self.sock.sendto(response.encode("utf-8"), addr)
-                    self.spect = True
-                    print("Spectator connected.")
 
     def accept(self):
         self.name = input("Name this Peer\n")
@@ -91,11 +37,11 @@ class host:
                 print("Port must be above 5000.")
 
         self.sock.bind(("", port))
-        print(f"{self.name} Listening on port {port}")
+        print(f"{self.name} listening on port {port}")
 
         self.running = True
-        listener = threading.Thread(target=self._accept_loop, daemon=True)
-        listener.start()
+        peers = threading.Thread(target=self._accept_loop, daemon=True)
+        peers.start()
 
         while True:
             if not self.request_queue.empty():
@@ -120,22 +66,88 @@ class host:
                         print("Invalid seed.")
 
                 # Send handshake response using KV pairs
+                self.seed = seed
                 handshake = encode_message({"message_type": "HANDSHAKE_RESPONSE", "seed": seed})
                 self.sock.sendto(handshake.encode("utf-8"), addr)
                 print("Handshake sent.\n")
 
-                while True:
-                    l = threading.Thread(target=self.listen_loop, daemon=True)
-                    l.start()
-                    chatmsg = input("Type a message:\n")
-                    send = {
-                        "message_type": "CHAT_MESSAGE",
-                        "sender_name": self.name,
-                        "content_type": "TEXT",
-                        "message_text": chatmsg
-                    }
-                    self.reliability.send_with_ack(send, self.jaddr)
+                listener = threading.Thread(target=self.listen_loop, daemon=True)
+                listener.start()
 
-        self.running = False
+                while True:
+                    self.chat()
+
         self.sock.close()
-        listener.join()
+        peers.join()
+
+    #loop for accepting peers, ends when the game begins
+    def _accept_loop(self):
+        while self.running:
+            try:
+                msg, addr = self.sock.recvfrom(1024)
+            except OSError:
+                break
+
+            self.request_queue.put((msg.decode(), addr))
+
+    def listen_loop(self):
+        while self.listening:
+
+            try:
+                msg, addr = self.sock.recvfrom(1024)
+            except OSError:
+                break
+
+            decoded = msg.decode()
+            print(f"Host Received:\n{decoded}")
+            if self.spect is True:
+                self.reliability.send_with_ack(msg, self.saddr)
+            kv = decode_message(decoded)
+
+            # Store message
+            with self.lock:
+                self.kv_messages.append(kv)
+
+            # Detect and handle multiple message types
+            if kv.get("message_type") == "SPECTATOR_REQUEST":
+                if self.spect is False:
+                    self.saddr = addr
+                    response = encode_message({"message_type": "HANDSHAKE_RESPONSE"})
+                    self.sock.sendto(response.encode("utf-8"), addr)
+                    self.spect = True
+                    print("Spectator connected.")
+                continue
+            if "sequence_number" in kv:
+                incoming_seq = int(kv["sequence_number"])
+
+                if incoming_seq == self.seq + 1:
+                    self.seq += 1
+
+                ackmsg = encode_message({
+                    "message_type": "ACK",
+                    "ack_number": self.seq
+                })
+                print(f"Sending ACK message:\n{ackmsg}")
+                if addr == self.jaddr:
+                    self.sock.sendto(ackmsg.encode("utf-8"), self.jaddr)
+                elif self.spect is True:
+                    self.sock.sendto(ackmsg.encode("utf-8"), self.saddr)
+
+            if "ack_number" in kv:
+                self.ack = int(kv["ack_number"])
+
+    def chat(self):
+        chatmsg = input("Type a message:\n")
+        msg = {
+            "message_type": "CHAT_MESSAGE",
+            "sender_name": self.name,
+            "content_type": "TEXT",
+            "message_text": chatmsg
+        }
+        self.send(msg)
+
+    def send(self, msg):
+        self.reliability.send_with_ack(msg, self.jaddr)
+
+        if self.spect is True:
+            self.reliability.send_with_ack(msg, self.saddr)
