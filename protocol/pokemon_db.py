@@ -19,7 +19,8 @@ def load_pokemon_db(csv_path=DEFAULT_CSV_PATH):
         
         for row in reader:
             name = row["name"]
-            
+
+            dex_id = int(row["pokedex_number"])
             # Get stats
             hp = int(float(row["hp"]))
             attack = int(float(row["attack"]))
@@ -65,6 +66,7 @@ def load_pokemon_db(csv_path=DEFAULT_CSV_PATH):
             
             # Save it (lowercase name)
             db[name.lower()] = p
+            db[dex_id] = p
             
     print("Loaded " + str(len(db)) + " Pokemon.")
     return db

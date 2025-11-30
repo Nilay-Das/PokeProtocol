@@ -2,28 +2,34 @@ import socket
 import threading
 import queue
 import time
+
+from protocol import pokemon_db
 from protocol.messages import *
 from protocol.reliability import ReliableChannel
 
 class host:
 
-    saddr = None
-    spect = False
-    jaddr = None
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    seed = 0
-    request_queue = queue.Queue()
-    ack_queue = queue.Queue()
-    kv_messages = []
-    lock = threading.Lock()
-    listening = True
-    running = False
-    name = ""
-    seq = 1
-    ack = None
-    reliability = ReliableChannel(sock, ack_queue)
+    def __init__(self, pokemon):
+        self.pokemon = pokemon
+        self.opp_mon = None
+        self.saddr = None
+        self.spect = False
+        self.jaddr = None
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.seed = 0
+        self.request_queue = queue.Queue()
+        self.ack_queue = queue.Queue()
+        self.kv_messages = []
+        self.lock = threading.Lock()
+        self.listening = True
+        self.running = False
+        self.name = ""
+        self.seq = 1
+        self.ack = None
+        self.reliability = ReliableChannel(self.sock, self.ack_queue)
 
     def accept(self):
+
         self.name = input("Name this Peer\n")
 
         print("Enter a port (>5000):")
@@ -51,7 +57,7 @@ class host:
                 print(f"\nPeer at {addr} sent:")
                 print(msg)
 
-                choice = input("Accept (Y/N)? ").strip().upper()
+                choice = input("Enter Y to accept Peer, enter anything else to ignore").upper()
                 if choice != "Y":
                     print("Peer rejected.")
                     continue

@@ -10,22 +10,26 @@ from protocol.reliability import ReliableChannel
 
 class joiner:
     #attributes
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    name = "Joiner"
-    ack_queue = queue.Queue()
-    running = False
-    host_addr = None
-    kv_messages = []
-    lock = threading.Lock()
-    seed = None
-    seq = 1
-    ack = None
-    reliability = ReliableChannel(sock, ack_queue)
+    def __init__(self, pokemon):
+        self.pokemon = pokemon
+        self.opp_mon = None
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.name = ""
+        self.ack_queue = queue.Queue()
+        self.running = False
+        self.host_addr = None
+        self.kv_messages = []
+        self.lock = threading.Lock()
+        self.seed = None
+        self.seq = 1
+        self.ack = None
+        self.reliability = ReliableChannel(self.sock, self.ack_queue)
 
     def start(self, host_ip, host_port):
         # bind local ephemeral port
         self.sock.bind(("", 0))
-        print(f"[Joiner] Using port {self.sock.getsockname()[1]}")
+
+        self.name = input("Name this Peer\n")
 
         self.running = True
         t = threading.Thread(target=self.listen_loop, daemon=True)
