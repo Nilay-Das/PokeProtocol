@@ -2,6 +2,8 @@ import socket
 import threading
 import time
 import queue
+
+from protocol import reliability
 from protocol.messages import *
 from protocol.reliability import ReliableChannel
 
@@ -10,7 +12,7 @@ class joiner:
     #attributes
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     name = "Joiner"
-    request_queue = queue.Queue()
+    ack_queue = queue.Queue()
     running = False
     host_addr = None
     kv_messages = []
@@ -18,7 +20,7 @@ class joiner:
     seed = None
     seq = 1
     ack = None
-    reliability = ReliableChannel(sock)
+    reliability = ReliableChannel(sock, ack_queue)
 
     def start(self, host_ip, host_port):
         # bind local ephemeral port
@@ -41,6 +43,9 @@ class joiner:
         while True:
             self.chat()
 
+    # main listener loop to handle differenet messages
+    # pushes message to reliability layer via a queue
+    # to get rid of multiple recvfroms populating socket
     def listen_loop(self):
         while self.running:
             try:
@@ -49,10 +54,13 @@ class joiner:
                 break
 
             decoded = msg.decode()
-            print(f"[Joiner] Received:\n{decoded}")
 
             kv = decode_message(decoded)
 
+            if kv.get("message_type") != "ACK":
+                print(f"\n{decoded}")
+
+            self.ack_queue.put(kv)
             # Store message
             with self.lock:
                 self.kv_messages.append(kv)
@@ -73,6 +81,7 @@ class joiner:
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
 
+    # chat function for CHAT_MESSAGE
     def handshake(self, host_ip, host_port):
         self.host_addr = (host_ip, host_port)
         handshake = encode_message({"message_type":"HANDSHAKE_REQUEST"})

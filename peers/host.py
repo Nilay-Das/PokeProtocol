@@ -13,6 +13,7 @@ class host:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     seed = 0
     request_queue = queue.Queue()
+    ack_queue = queue.Queue()
     kv_messages = []
     lock = threading.Lock()
     listening = True
@@ -20,7 +21,7 @@ class host:
     name = ""
     seq = 1
     ack = None
-    reliability = ReliableChannel(sock)
+    reliability = ReliableChannel(sock, ack_queue)
 
     def accept(self):
         self.name = input("Name this Peer\n")
@@ -90,6 +91,9 @@ class host:
 
             self.request_queue.put((msg.decode(), addr))
 
+    # main listener loop to handle differenet messages
+    # pushes message to reliability layer via a queue
+    # to get rid of multiple recvfroms populating socket
     def listen_loop(self):
         while self.listening:
 
@@ -99,11 +103,16 @@ class host:
                 break
 
             decoded = msg.decode()
-            print(f"Host Received:\n{decoded}")
+
+            #if there is a spectator, sends message to it
             if self.spect is True:
                 self.reliability.send_with_ack(msg, self.saddr)
             kv = decode_message(decoded)
 
+            if kv.get("message_type") != "ACK":
+                print(f"\n{decoded}")
+
+            self.ack_queue.put(kv)
             # Store message
             with self.lock:
                 self.kv_messages.append(kv)
@@ -127,7 +136,6 @@ class host:
                     "message_type": "ACK",
                     "ack_number": self.seq
                 })
-                print(f"Sending ACK message:\n{ackmsg}")
                 if addr == self.jaddr:
                     self.sock.sendto(ackmsg.encode("utf-8"), self.jaddr)
                 elif self.spect is True:
@@ -136,6 +144,7 @@ class host:
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
 
+    # chat function for CHAT_MESSAGE
     def chat(self):
         chatmsg = input("Type a message:\n")
         msg = {
@@ -146,6 +155,8 @@ class host:
         }
         self.send(msg)
 
+    # host specific function to send data, just checks if there is a spectator
+    # and sends the message to it as well
     def send(self, msg):
         self.reliability.send_with_ack(msg, self.jaddr)
 
