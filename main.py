@@ -11,7 +11,7 @@ print("--- PokeProtocol ---")
 db = load_pokemon_db()
 pk = 0
 #spectator = spectator()
-print("h for host, j for joiner, s for spectator(not yet implemented)")
+print("h for host\nj for joiner\ns for spectator(not yet implemented)")
 choice = input().lower()
 
 if choice == "h":

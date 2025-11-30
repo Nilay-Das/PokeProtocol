@@ -67,7 +67,7 @@ def load_pokemon_db(csv_path=DEFAULT_CSV_PATH):
             # Save it (lowercase name)
             db[name.lower()] = p
             db[dex_id] = p
-            
-    print("Loaded " + str(len(db)) + " Pokemon.")
+
+    print("Loaded " + str(len(db)/2) + " Pokemon.")
     return db
 
