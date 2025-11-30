@@ -6,6 +6,8 @@ import queue
 from protocol import reliability, pokemon_db
 from protocol.messages import *
 from protocol.reliability import ReliableChannel
+from protocol.battle_state import Move, BattleState, calculate_damage, apply_damage
+
 
 
 class joiner:
@@ -82,6 +84,49 @@ class joiner:
                         print(f"[Joiner] Opponent chose {self.opp_mon.name} (HP {self.opp_mon.current_hp})")
                     else:
                         print(f"[Joiner] Received BATTLE_SETUP with unknown Pokémon: {pname}")
+        
+            # 1) Host attack announce
+            if kv.get("message_type") == "ATTACK_ANNOUNCE":
+                attacker_name = kv.get("attacker_name", "")
+                defender_name = kv.get("defender_name", "")
+                move_name = kv.get("move_name", "")
+
+                print(f"[JOINER] Received ATTACK_ANNOUNCE: {attacker_name} uses {move_name} on {defender_name}")
+
+                # Mapping names to the local Pokémon objects:
+                attacker = self.opp_mon
+                defender = self.pokemon
+
+                if attacker is None or defender is None:
+                    print("[JOINER] Battle not set up correctly (missing attacker/defender).")
+                else:
+                    move = Move( #Just for test purpose now. Category should come from CSV
+                        name=move_name,
+                        base_power=1,
+                        category="special",
+                        move_type=attacker.type1.lower(),
+                    )
+
+                    state = BattleState(attacker=attacker, defender=defender)
+                    print(f"[JOINER] Before attack: {defender.name} HP = {defender.current_hp}")
+                    damage = calculate_damage(state, move)
+                    apply_damage(state, damage)
+                    print(f"[JOINER] Calculated damage: {damage}")
+                    print(f"[JOINER] After attack: {defender.name} HP = {defender.current_hp}")
+
+                    report = {
+                        "message_type": "CALCULATION_REPORT",
+                        "attacker_name": attacker.name,
+                        "defender_name": defender.name,
+                        "move_name": move.name,
+                        "damage_dealt": str(damage),
+                        "defender_hp_remaining": str(defender.current_hp),
+                    }
+                    # Sending CALCULATION_REPORT to the host
+                    encoded_report = encode_message(report).encode("utf-8")
+                    self.sock.sendto(encoded_report, self.host_addr)
+                    print("[JOINER] Sent CALCULATION_REPORT")
+
 
 
             # Detect and handle multiple message types
