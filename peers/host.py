@@ -27,6 +27,9 @@ class host:
         self.seq = 1
         self.ack = None
         self.reliability = ReliableChannel(self.sock, self.ack_queue)
+        #Adding a local db for looking up Pokemons
+        self.db = pokemon_db.load_pokemon_db()
+        self.battle_setup_done = False
 
     def accept(self):
 
@@ -122,6 +125,27 @@ class host:
             # Store message
             with self.lock:
                 self.kv_messages.append(kv)
+
+            # Handle BATTLE_SETUP from joiner
+            if kv.get("message_type") == "BATTLE_SETUP":
+                pname = kv.get("pokemon_name")
+                if pname:
+                    self.opp_mon = self.db.get(pname.lower())
+                    if self.opp_mon:
+                        print(f"[Host] Opponent chose {self.opp_mon.name} (HP {self.opp_mon.current_hp})")
+                    else:
+                        print(f"[Host] Received BATTLE_SETUP with unknown Pokémon: {pname}")
+
+                # Send BATTLE_SETUP to joiner
+                if not self.battle_setup_done and self.jaddr is not None:
+                    reply = {
+                        "message_type": "BATTLE_SETUP",
+                        "pokemon_name": self.pokemon.name,
+                    }
+                    print(f"[Host] Sending BATTLE_SETUP: {reply}")
+                    self.reliability.send_with_ack(reply, self.jaddr)
+                    self.battle_setup_done = True
+
 
             # Detect and handle multiple message types
             if kv.get("message_type") == "SPECTATOR_REQUEST":

@@ -3,7 +3,7 @@ import threading
 import time
 import queue
 
-from protocol import reliability
+from protocol import reliability, pokemon_db
 from protocol.messages import *
 from protocol.reliability import ReliableChannel
 
@@ -13,6 +13,7 @@ class joiner:
     def __init__(self, pokemon):
         self.pokemon = pokemon
         self.opp_mon = None
+        self.db = pokemon_db.load_pokemon_db() #Adding a local db for looking up Pokemons
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.name = ""
         self.ack_queue = queue.Queue()
@@ -43,6 +44,9 @@ class joiner:
 
         while self.seed is None:
             time.sleep(0.5)
+        
+        # Send battle setup message
+        self.send_battle_setup()
 
         while True:
             self.chat()
@@ -69,6 +73,17 @@ class joiner:
             with self.lock:
                 self.kv_messages.append(kv)
 
+            # Handle BATTLE_SETUP from host
+            if kv.get("message_type") == "BATTLE_SETUP":
+                pname = kv.get("pokemon_name")
+                if pname:
+                    self.opp_mon = self.db.get(pname.lower())
+                    if self.opp_mon:
+                        print(f"[Joiner] Opponent chose {self.opp_mon.name} (HP {self.opp_mon.current_hp})")
+                    else:
+                        print(f"[Joiner] Received BATTLE_SETUP with unknown Pokémon: {pname}")
+
+
             # Detect and handle multiple message types
             if "seed" in kv:
                 self.seed = int(kv["seed"])
@@ -90,6 +105,16 @@ class joiner:
         self.host_addr = (host_ip, host_port)
         handshake = encode_message({"message_type":"HANDSHAKE_REQUEST"})
         self.sock.sendto(handshake.encode("utf-8"), self.host_addr)
+    
+    # send battle setup message to host
+    def send_battle_setup(self):
+        msg = {
+            "message_type": "BATTLE_SETUP",
+            "pokemon_name": self.pokemon.name,
+        }
+        print(f"[Joiner] Sending BATTLE_SETUP: {msg}")
+        self.reliability.send_with_ack(msg, self.host_addr)
+
 
     def chat(self):
         chatmsg = input("Type a message:\n")

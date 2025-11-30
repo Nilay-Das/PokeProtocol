@@ -3,7 +3,7 @@ from protocol.pokemon_db import load_pokemon_db
 
 from peers.host import host
 from peers.joiner import joiner
-from peers.spectator import spectator
+#.from peers.spectator import spectator
 
 print("--- PokeProtocol ---")
 
