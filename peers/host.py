@@ -29,7 +29,7 @@ class host:
         self.seq = 1
         self.ack = None
         self.reliability = ReliableChannel(self.sock, self.ack_queue)
-        #Adding a local db for looking up Pokemons
+        # Adding a local db for looking up Pokemons
         self.db = pokemon_db.load_pokemon_db()
         self.battle_setup_done = False
 
@@ -62,7 +62,9 @@ class host:
                 print(f"\nPeer at {addr} sent:")
                 print(msg)
 
-                choice = input("Enter Y to accept Peer, enter anything else to ignore").upper()
+                choice = input(
+                    "Enter Y to accept Peer, enter anything else to ignore"
+                ).upper()
                 if choice != "Y":
                     print("Peer rejected.")
                     continue
@@ -79,20 +81,22 @@ class host:
 
                 # Send handshake response using KV pairs
                 self.seed = seed
-                handshake = encode_message({"message_type": "HANDSHAKE_RESPONSE", "seed": seed})
+                handshake = encode_message(
+                    {"message_type": "HANDSHAKE_RESPONSE", "seed": seed}
+                )
                 self.sock.sendto(handshake.encode("utf-8"), addr)
                 print("Handshake sent.\n")
 
                 listener = threading.Thread(target=self.listen_loop, daemon=True)
                 listener.start()
 
-                while True:
+                while self.running:
                     self.chat()
 
-        self.sock.close()
-        peers.join()
+                self.sock.close()
+                peers.join()
 
-    #loop for accepting peers, ends when the game begins
+    # loop for accepting peers, ends when the game begins
     def _accept_loop(self):
         while self.running:
             try:
@@ -115,7 +119,7 @@ class host:
 
             decoded = msg.decode()
 
-            #if there is a spectator, sends message to it
+            # if there is a spectator, sends message to it
             if self.spect is True:
                 self.reliability.send_with_ack(msg, self.saddr)
             kv = decode_message(decoded)
@@ -134,9 +138,13 @@ class host:
                 if pname:
                     self.opp_mon = self.db.get(pname.lower())
                     if self.opp_mon:
-                        print(f"[Host] Opponent chose {self.opp_mon.name} (HP {self.opp_mon.current_hp})")
+                        print(
+                            f"[Host] Opponent chose {self.opp_mon.name} (HP {self.opp_mon.current_hp})"
+                        )
                     else:
-                        print(f"[Host] Received BATTLE_SETUP with unknown Pokémon: {pname}")
+                        print(
+                            f"[Host] Received BATTLE_SETUP with unknown Pokémon: {pname}"
+                        )
 
                 # Send BATTLE_SETUP to joiner
                 if not self.battle_setup_done and self.jaddr is not None:
@@ -163,9 +171,11 @@ class host:
                 defender = self.opp_mon
 
                 if attacker is None or defender is None:
-                    print("[HOST] Battle not set up correctly (missing attacker/defender).")
+                    print(
+                        "[HOST] Battle not set up correctly (missing attacker/defender)."
+                    )
                 else:
-                    move = Move( #Just for test purpose now. Category should come from CSV
+                    move = Move(  # Just for test purpose now. Category should come from CSV
                         name=move_name,
                         base_power=1,
                         category="special",
@@ -179,7 +189,9 @@ class host:
                     reported_damage = int(damage_str)
                     reported_hp = int(hp_str)
 
-                    print(f"[HOST] Local damage = {local_damage}, reported damage = {reported_damage}")
+                    print(
+                        f"[HOST] Local damage = {local_damage}, reported damage = {reported_damage}"
+                    )
 
                     if local_damage == reported_damage:
                         # Accept and apply damage
@@ -189,13 +201,35 @@ class host:
                         )
                         # Keeping the copy in sync
                         defender.current_hp = state.defender.current_hp
+            
+            # Handling incoming GAME_OVER message
+            if kv.get("message_type") == "GAME_OVER":
+                winner = kv.get("winner", "Unknown")
+                loser = kv.get("loser", "Unknown")
+                print(f"[HOST] GAME_OVER: {winner} defeated {loser}")
 
-                        # Optional: check for game over
-                        if defender.current_hp <= 0:
-                            print(f"[HOST] {defender.name} fainted! Game over.")
-                    else:
-                        print("[HOST] Damage mismatch! (We can add resolution later.)")
+                self.running = False
+                self.listening = False
+                self.sock.close()
+                break
 
+            # check for game over
+            if defender.current_hp <= 0:
+                print(f"[HOST] {defender.name} fainted!")
+
+                game_over_msg = {
+                    "message_type": "GAME_OVER",
+                    "winner": attacker.name,
+                    "loser": defender.name,
+                }
+
+            # Use the host.send() helper so spectators get it too
+            print(f"[HOST] Sending GAME_OVER: {game_over_msg}")
+            self.send(game_over_msg)
+
+            # Stop battle loops
+            self.running = False
+            self.listening = False
 
             # Detect and handle multiple message types
             if kv.get("message_type") == "SPECTATOR_REQUEST":
@@ -212,10 +246,7 @@ class host:
                 if incoming_seq == self.seq + 1:
                     self.seq += 1
 
-                ackmsg = encode_message({
-                    "message_type": "ACK",
-                    "ack_number": self.seq
-                })
+                ackmsg = encode_message({"message_type": "ACK", "ack_number": self.seq})
                 if addr == self.jaddr:
                     self.sock.sendto(ackmsg.encode("utf-8"), self.jaddr)
                 elif self.spect is True:
@@ -226,13 +257,12 @@ class host:
 
     # Helper function to build a move from a name
     def _build_move_from_name(self, move_name: str) -> Move:
-        return Move( #Just for test purpose now. Category should come from CSV
+        return Move(  # Just for test purpose now. Category should come from CSV
             name=move_name,
             base_power=1,
             category="special",
             move_type=self.pokemon.type1.lower(),
         )
-
 
     # Chat function for CHAT_MESSAGE
     def chat(self):
@@ -263,7 +293,7 @@ class host:
                 "move_name": move_name,
             }
             print(f"[HOST] Sending ATTACK_ANNOUNCE: {attack_msg}")
-            #Sending ATTACK_ANNOUNCE to the joiner
+            # Sending ATTACK_ANNOUNCE to the joiner
             self.reliability.send_with_ack(attack_msg, self.jaddr)
             return
 
@@ -275,7 +305,6 @@ class host:
             "message_text": msg,
         }
         self.send(chat_msg)
-
 
     # host specific function to send data, just checks if there is a spectator
     # and sends the message to it as well
