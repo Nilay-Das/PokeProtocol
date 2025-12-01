@@ -34,7 +34,6 @@ class host:
         self.battle_setup_done = False
 
     def accept(self):
-
         self.name = input("Name this Peer\n")
 
         print("Enter a port (>5000):")
@@ -70,7 +69,7 @@ class host:
                     continue
 
                 self.jaddr = addr
-                self.running = False
+                self.running = False  # Stop accepting new peers
 
                 seed = -1
                 while seed < 0:
@@ -90,7 +89,8 @@ class host:
                 listener = threading.Thread(target=self.listen_loop, daemon=True)
                 listener.start()
 
-                while self.running:
+                # Chat loop continues while listening
+                while self.listening:
                     self.chat()
 
                 self.sock.close()
@@ -100,18 +100,29 @@ class host:
     def _accept_loop(self):
         while self.running:
             try:
+                # Set timeout so we can check self.running periodically
+                self.sock.settimeout(0.5)
                 msg, addr = self.sock.recvfrom(1024)
+                self.sock.settimeout(None)  # Remove timeout
+            except socket.timeout:
+                # Timeout occurred, check if we should continue
+                continue
             except OSError:
                 break
 
-            self.request_queue.put((msg.decode(), addr))
+            decoded = msg.decode()
+            kv = decode_message(decoded)
+
+            # Only process handshake requests in accept loop
+            # Let other messages be handled by listen_loop
+            if kv.get("message_type") == "HANDSHAKE_REQUEST":
+                self.request_queue.put((decoded, addr))
 
     # main listener loop to handle differenet messages
     # pushes message to reliability layer via a queue
     # to get rid of multiple recvfroms populating socket
     def listen_loop(self):
         while self.listening:
-
             try:
                 msg, addr = self.sock.recvfrom(1024)
             except OSError:
@@ -201,7 +212,25 @@ class host:
                         )
                         # Keeping the copy in sync
                         defender.current_hp = state.defender.current_hp
-            
+
+                        # Check for game over using reported HP (joiner's Pokemon fainted)
+                        if reported_hp <= 0 or defender.current_hp <= 0:
+                            print(f"[HOST] {defender.name} fainted!")
+
+                            game_over_msg = {
+                                "message_type": "GAME_OVER",
+                                "winner": attacker.name,
+                                "loser": defender.name,
+                            }
+
+                            # Use the host.send() helper so spectators get it too
+                            print(f"[HOST] Sending GAME_OVER: {game_over_msg}")
+                            self.send(game_over_msg)
+
+                            # Stop battle loops
+                            self.running = False
+                            self.listening = False
+
             # Handling incoming GAME_OVER message
             if kv.get("message_type") == "GAME_OVER":
                 winner = kv.get("winner", "Unknown")
@@ -212,24 +241,6 @@ class host:
                 self.listening = False
                 self.sock.close()
                 break
-
-            # check for game over
-            if defender.current_hp <= 0:
-                print(f"[HOST] {defender.name} fainted!")
-
-                game_over_msg = {
-                    "message_type": "GAME_OVER",
-                    "winner": attacker.name,
-                    "loser": defender.name,
-                }
-
-            # Use the host.send() helper so spectators get it too
-            print(f"[HOST] Sending GAME_OVER: {game_over_msg}")
-            self.send(game_over_msg)
-
-            # Stop battle loops
-            self.running = False
-            self.listening = False
 
             # Detect and handle multiple message types
             if kv.get("message_type") == "SPECTATOR_REQUEST":
@@ -246,11 +257,13 @@ class host:
                 if incoming_seq == self.seq + 1:
                     self.seq += 1
 
-                ackmsg = encode_message({"message_type": "ACK", "ack_number": self.seq})
-                if addr == self.jaddr:
-                    self.sock.sendto(ackmsg.encode("utf-8"), self.jaddr)
-                elif self.spect is True:
-                    self.sock.sendto(ackmsg.encode("utf-8"), self.saddr)
+                # ACK should acknowledge the received sequence number
+                # Always send ACK back to the sender (addr)
+                ackmsg = encode_message(
+                    {"message_type": "ACK", "ack_number": incoming_seq}
+                )
+                print(f"[HOST] Sending ACK {incoming_seq} to {addr}")
+                self.sock.sendto(ackmsg.encode("utf-8"), addr)
 
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])

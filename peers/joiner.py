@@ -142,8 +142,26 @@ class joiner:
                     self.sock.sendto(encoded_report, self.host_addr)
                     print("[JOINER] Sent CALCULATION_REPORT")
 
-            # Handling incoming GAME_OVER message
+                    # Check for game over - if defender (joiner's Pokemon) fainted
+                    if defender.current_hp <= 0:
+                        print(f"[JOINER] {defender.name} fainted!")
 
+                        game_over_msg = {
+                            "message_type": "GAME_OVER",
+                            "winner": attacker.name,
+                            "loser": defender.name,
+                        }
+
+                        print(f"[JOINER] Sending GAME_OVER: {game_over_msg}")
+                        # Send reliably using reliability channel
+                        self.reliability.send_with_ack(game_over_msg, self.host_addr)
+
+                        # Stop loops
+                        self.running = False
+                        self.sock.close()
+                        break
+
+            # Handling incoming GAME_OVER message
             if kv.get("message_type") == "GAME_OVER":
                 winner = kv.get("winner", "Unknown")
                 loser = kv.get("loser", "Unknown")
@@ -163,7 +181,8 @@ class joiner:
 
                 if incoming_seq == self.seq + 1:
                     self.seq += 1
-                ackmsg = encode_message({"message_type": "ACK", "ack_number": self.seq})
+                # ACK should acknowledge the received sequence number
+                ackmsg = encode_message({"message_type": "ACK", "ack_number": incoming_seq})
                 self.sock.sendto(ackmsg.encode("utf-8"), self.host_addr)
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
