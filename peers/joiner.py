@@ -18,13 +18,15 @@ from protocol.battle_state import (
 
 class joiner:
     # attributes
-    def __init__(self, pokemon):
+    def __init__(self, pokemon, db, comm_mode):
         self.pokemon = pokemon
         self.opp_mon = None
-        self.db = (
-            pokemon_db.load_pokemon_db()
-        )  # Adding a local db for looking up Pokemons
+        self.db = db
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # adding broadcast capabilities to udp socket
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.comm_mode = comm_mode
         self.name = ""
         self.ack_queue = queue.Queue()
         self.running = False
@@ -46,7 +48,10 @@ class joiner:
 
     def start(self, host_ip, host_port):
         # bind local ephemeral port
-        self.sock.bind(("", 0))
+        if self.comm_mode == 1:
+            self.sock.bind(("", 0))
+        else:
+            self.sock.bind(("0.0.0.0", host_port))
 
         self.name = input("Name this Peer\n")
 
@@ -66,10 +71,8 @@ class joiner:
         # Send battle setup message
         self.send_battle_setup()
 
-        while self.running:
+        while True:
             self.chat()
-
-        self.sock.close()
 
     # main listener loop to handle differenet messages
     # pushes message to reliability layer via a queue
@@ -557,7 +560,9 @@ class joiner:
     def send_battle_setup(self):
         msg = {
             "message_type": "BATTLE_SETUP",
+            "communication_mode": self.comm_mode,
             "pokemon_name": self.pokemon.name,
+            "stat_boosts": {"special_attack_uses": 5, "special_defense_uses": 5},
         }
         print(f"[Joiner] Sending BATTLE_SETUP: {msg}")
         self.reliability.send_with_ack(msg, self.host_addr)
@@ -630,5 +635,4 @@ class joiner:
             "content_type": "TEXT",
             "message_text": chatmsg,
         }
-
         self.reliability.send_with_ack(send, self.host_addr)
