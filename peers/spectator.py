@@ -1,125 +1,91 @@
 import socket
-import threading
-import time
-import queue
+from protocol.messages import decode_message, encode_message
 
-from protocol.messages import *
-from protocol.reliability import ReliableChannel
+class Spectator:
 
-class spectator:
-    def __init__(self):
-        # Spectator doesn't need a Pokemon object
+    def __init__(self, host_ip, host_port):
+        self.host_addr = (host_ip, host_port)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.name = ""
-        self.ack_queue = queue.Queue()
-        self.running = False
-        self.host_addr = None
-        self.seq = 1
-        self.connected = False
-        # Initialize reliability layer
-        self.reliability = ReliableChannel(self.sock, self.ack_queue)
-
-    def start(self, host_ip, host_port):
-        # Bind to ephemeral port
         self.sock.bind(("", 0))
 
-        self.name = input("Name this Spectator\n")
+        print(f"[SPECTATOR] Local socket: {self.sock.getsockname()}")
 
-        self.running = True
-        # Start listener thread
-        t = threading.Thread(target=self.listen_loop, daemon=True)
-        t.start()
 
-        # Send handshake
-        self.handshake(host_ip, host_port)
-        print("[Spectator] Request sent. Waiting for Host...")
+    def connect(self):
+        print("[SPECTATOR] Sending SPECTATOR_REQUEST...")
 
-        # Wait for connection confirmation
-        while not self.connected:
-            time.sleep(0.1)
+        msg = encode_message({"message_type": "SPECTATOR_REQUEST"})
+        self.sock.sendto(msg.encode("utf-8"), self.host_addr)
 
-        print("--- Connected to Lobby as Spectator ---")
-        print("You will see battle updates below. Type to chat.")
+        data, _ = self.sock.recvfrom(1024)
+        kv = decode_message(data.decode())
+
+        if kv.get("message_type") == "HANDSHAKE_RESPONSE":
+            print("[SPECTATOR] Connected successfully.")
+        else:
+            print("[SPECTATOR] Unexpected response:", kv)
+
+
+    def listen(self):
+        print("\n[SPECTATOR] Watching the match...\n")
 
         while True:
-            self.chat()
+            data, _ = self.sock.recvfrom(1024)
+            kv = decode_message(data.decode())
 
-    def listen_loop(self):
-        while self.running:
-            try:
-                msg, addr = self.sock.recvfrom(1024)
-            except OSError:
-                break
-
-            decoded = msg.decode()
-            kv = decode_message(decoded)
-
-            # 1. Feed the reliability layer (for outgoing messages waiting for ACKs)
-            self.ack_queue.put(kv)
-
-            # 2. Handle Sequence Numbers & Send ACKs (for incoming messages)
+            # Send ACK for reliable packets
             if "sequence_number" in kv:
-                incoming_seq = int(kv["sequence_number"])
-                
-                # Simple sequence tracking
-                if incoming_seq >= self.seq:
-                    self.seq = incoming_seq + 1
-
-                # Send ACK back to Host so Host doesn't retransmit
                 ackmsg = encode_message({
                     "message_type": "ACK",
-                    "ack_number": incoming_seq
+                    "ack_number": kv["sequence_number"]
                 })
                 self.sock.sendto(ackmsg.encode("utf-8"), self.host_addr)
 
-            # 3. Process Messages for Display
-            msg_type = kv.get("message_type")
+            mtype = kv.get("message_type")
 
-            if msg_type == "HANDSHAKE_RESPONSE":
-                self.connected = True
-            
-            elif msg_type == "CHAT_MESSAGE":
-                sender = kv.get("sender_name", "Unknown")
-                text = kv.get("message_text", "")
-                print(f"\n[Chat] {sender}: {text}")
 
-            elif msg_type == "BATTLE_SETUP":
-                pname = kv.get("pokemon_name", "Unknown")
-                print(f"\n[Battle] A player has selected {pname}!")
 
-            elif msg_type == "ATTACK_ANNOUNCE":
-                attacker = kv.get("attacker_name", "?")
-                move = kv.get("move_name", "?")
-                print(f"\n[Battle] {attacker} uses {move}!")
+            if mtype == "CHAT_MESSAGE":
+                if kv.get("content_type") == "TEXT":
+                    print(f"[{kv['sender_name']}]: {kv['message_text']}")
+                elif kv.get("content_type") == "STICKER":
+                    print(f"[{kv['sender_name']}] sent sticker: {kv['message_text']}")
 
-            elif msg_type == "CALCULATION_REPORT":
-                # Spectator just trusts the Host's report
-                attacker = kv.get("attacker_name", "?")
-                damage = kv.get("damage_dealt", "0")
-                hp_rem = kv.get("defender_hp_remaining", "?")
-                print(f"[Battle] {attacker} dealt {damage} damage. Opponent HP: {hp_rem}")
+            elif mtype == "BATTLE_SETUP":
+                print("[SETUP] Pokemon:", kv.get("pokemon_name"))
 
-            elif msg_type == "GAME_OVER":
-                winner = kv.get("winner", "?")
-                print(f"\n[Battle] GAME OVER! The winner is {winner}!")
+            elif mtype == "ATTACK_ANNOUNCE":
+                print(
+                    f"[ATTACK] {kv.get('attacker_name')} used "
+                    f"{kv.get('move_name')} on "
+                    f"{kv.get('defender_name')}"
+                )
 
-    def handshake(self, host_ip, host_port):
-        self.host_addr = (host_ip, int(host_port))
-        # Send raw request first
-        req = encode_message({"message_type": "SPECTATOR_REQUEST"})
-        self.sock.sendto(req.encode("utf-8"), self.host_addr)
+            elif mtype == "CALCULATION_REPORT":
+                print(
+                    f"[DAMAGE] {kv.get('defender_name')} "
+                    f"took {kv.get('damage_dealt')} damage "
+                    f"(HP: {kv.get('defender_hp_remaining')})"
+                )
 
-    def chat(self):
-        chatmsg = input()
-        # Don't send empty messages
-        if not chatmsg.strip():
-            return
+            elif mtype == "GAME_OVER":
+                print(
+                    f"\n🏆 GAME OVER\n"
+                    f"{kv.get('winner')} defeated "
+                    f"{kv.get('loser')}"
+                )
+                break
 
-        send = {
-            "message_type": "CHAT_MESSAGE",
-            "sender_name": self.name,
-            "content_type": "TEXT",
-            "message_text": chatmsg
-        }
-        # Use reliability to ensure chat reaches host
-        self.reliability.send_with_ack(send, self.host_addr)
+            elif mtype != "ACK":
+                print("[EVENT]", kv)
+
+        self.sock.close()
+
+if __name__ == "__main__":
+
+    ip = input("Enter host IP: ")
+    port = int(input("Enter host PORT: "))
+
+    spec = Spectator(ip, port)
+    spec.connect()
+    spec.listen()
