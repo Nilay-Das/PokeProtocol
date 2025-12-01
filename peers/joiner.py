@@ -12,11 +12,15 @@ from protocol.battle_state import Move, BattleState, calculate_damage, apply_dam
 
 class joiner:
     #attributes
-    def __init__(self, pokemon):
+    def __init__(self, pokemon, db, comm_mode):
         self.pokemon = pokemon
         self.opp_mon = None
-        self.db = pokemon_db.load_pokemon_db() #Adding a local db for looking up Pokemons
+        self.db = db
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # adding broadcast capabilities to udp socket
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.comm_mode = comm_mode
         self.name = ""
         self.ack_queue = queue.Queue()
         self.running = False
@@ -30,7 +34,10 @@ class joiner:
 
     def start(self, host_ip, host_port):
         # bind local ephemeral port
-        self.sock.bind(("", 0))
+        if self.comm_mode == 1:
+            self.sock.bind(("", 0))
+        else:
+            self.sock.bind(("0.0.0.0",host_port))
 
         self.name = input("Name this Peer\n")
 
@@ -155,21 +162,72 @@ class joiner:
     def send_battle_setup(self):
         msg = {
             "message_type": "BATTLE_SETUP",
+            "communication_mode": self.comm_mode,
             "pokemon_name": self.pokemon.name,
+            "stat_boosts": { "special_attack_uses": 5, "special_defense_uses": 5 }
         }
         print(f"[Joiner] Sending BATTLE_SETUP: {msg}")
         self.reliability.send_with_ack(msg, self.host_addr)
 
 
     def chat(self):
-        chatmsg = input("Type a message:\n")
-        send = {
-            "message_type": "CHAT_MESSAGE",
-            "sender_name": self.name,
-            "content_type": "TEXT",
-            "message_text": chatmsg
-        }
+        msg = input("Commands:\n!attack to attack\n!chat for text message\n!sticker for sticker message\n!defend to defend\n!resolve for resolution request\n")
 
-        self.reliability.send_with_ack(send, self.host_addr)
+        if msg.strip() == "!attack":
+            # Show available moves
+            print(f"Your Pokémon: {self.pokemon.name}")
+            if not self.pokemon.moves:
+                print("No moves available, sending a basic attack.")
+                move_name = "BasicMove"
+            else:
+                print("Available moves:")
+                for i, m in enumerate(self.pokemon.moves, start=1):
+                    print(f"{i}. {m}")
+                choice = input("Choose a move number: ")
+                try:
+                    idx = int(choice) - 1
+                    move_name = self.pokemon.moves[idx]
+                except Exception:
+                    print("Invalid choice, using first move.")
+                    move_name = self.pokemon.moves[0]
+
+            attack_msg = {
+                "message_type": "ATTACK_ANNOUNCE",
+                "attacker_name": self.pokemon.name,
+                "defender_name": self.opp_mon.name if self.opp_mon else "",
+                "move_name": move_name,
+            }
+            print(f"[HOST] Sending ATTACK_ANNOUNCE: {attack_msg}")
+            # Sending ATTACK_ANNOUNCE to the joiner
+            self.reliability.send_with_ack(attack_msg, self.host_addr)
+            return
+
+        if msg.strip() == "!chat":
+            text = input("Type a message: \n")
+            # Normal chat message
+            chat_msg = {
+                "message_type": "CHAT_MESSAGE",
+                "sender_name": self.name,
+                "content_type": "TEXT",
+                "message_text": text,
+            }
+            self.reliability.send_with_ack(chat_msg, self.host_addr)
+
+        if msg.strip() == "!sticker":
+            stick = input("Input sticker data: \n")
+            # Normal chat message
+            chat_msg = {
+                "message_type": "CHAT_MESSAGE",
+                "sender_name": self.name,
+                "content_type": "STICKER",
+                "sticker_data": stick,
+            }
+            self.reliability.send_with_ack(chat_msg, self.host_addr)
+
+        if msg.strip() == "!defend":
+            print("defender logic here")
+
+        if msg.strip() == "!resolve":
+            print("Resolve logic here")
 
 

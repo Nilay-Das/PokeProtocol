@@ -38,6 +38,7 @@ class ReliableChannel:
                         self.ack_event.set()
                         print("Ack received")
                         return True
+                        self.ack_queue.Queue.clear() # idk if this works prolly not, remove it if doesn't help
                 except:
                     continue
 
