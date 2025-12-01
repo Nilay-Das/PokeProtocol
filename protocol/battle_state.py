@@ -1,4 +1,20 @@
 # This file holds the classes for the game
+from enum import Enum
+
+# Battle states for turn-based system
+class BattlePhase(Enum):
+    WAITING_FOR_MOVE = "WAITING_FOR_MOVE"
+    PROCESSING_TURN = "PROCESSING_TURN"
+
+# Type categories for determining physical vs special damage
+PHYSICAL_TYPES = {"normal", "fighting", "flying", "poison", "ground", "rock", "bug", "ghost", "steel"}
+SPECIAL_TYPES = {"fire", "water", "grass", "electric", "psychic", "ice", "dragon", "dark", "fairy"}
+
+def get_damage_category(move_type):
+    """Determine if a move is physical or special based on its type."""
+    if move_type.lower() in PHYSICAL_TYPES:
+        return "physical"
+    return "special"
 
 class Pokemon:
     def __init__(self, name, max_hp, current_hp, attack, special_attack, physical_defense, special_defense, type1, type2, type_multipliers, moves):
