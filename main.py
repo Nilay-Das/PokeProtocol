@@ -3,7 +3,7 @@ from protocol.pokemon_db import load_pokemon_db
 
 from peers.host import host
 from peers.joiner import joiner
-#.from peers.spectator import spectator
+from peers.spectator import spectator
 
 print("--- PokeProtocol ---")
 
@@ -68,4 +68,10 @@ if choice == "j":
 if choice == "s":
     hIP = input("Enter host IP: ")
     hPort = input("Enter host port: ")
+
     #spectator.start(hIP, hPort)
+    spec = spectator()
+    try:
+        spec.start(hIP, hPort)
+    except Exception as e:
+        print(f"Error connecting spectator: {e}")
