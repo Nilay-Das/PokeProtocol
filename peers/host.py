@@ -11,13 +11,18 @@ from protocol.battle_state import Move, BattleState, calculate_damage, apply_dam
 
 class host:
 
-    def __init__(self, pokemon):
+    def __init__(self, pokemon, db, comm_mode):
         self.pokemon = pokemon
         self.opp_mon = None
         self.saddr = None
         self.spect = False
         self.jaddr = None
+        self.addr = ""
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # adding broadcast capabilities to udp socket
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.comm_mode = comm_mode
         self.seed = 0
         self.request_queue = queue.Queue()
         self.ack_queue = queue.Queue()
@@ -29,12 +34,17 @@ class host:
         self.seq = 1
         self.ack = None
         self.reliability = ReliableChannel(self.sock, self.ack_queue)
-        # Adding a local db for looking up Pokemons
-        self.db = pokemon_db.load_pokemon_db()
+        self.db = db
         self.battle_setup_done = False
 
     def accept(self):
+
         self.name = input("Name this Peer\n")
+
+        if self.comm_mode == "P2P":
+            self.addr = str(input("Set host address:"))
+        else:
+            self.addr = "0.0.0.0"
 
         print("Enter a port (>5000):")
         port = 5000
@@ -47,7 +57,7 @@ class host:
             if port <= 5000:
                 print("Port must be above 5000.")
 
-        self.sock.bind(("", port))
+        self.sock.bind((self.addr, port))
         print(f"{self.name} listening on port {port}")
 
         self.running = True
@@ -61,15 +71,17 @@ class host:
                 print(f"\nPeer at {addr} sent:")
                 print(msg)
 
-                choice = input(
-                    "Enter Y to accept Peer, enter anything else to ignore"
-                ).upper()
+                choice = input("Enter Y to accept Peer, enter anything else to ignore\n").upper()
                 if choice != "Y":
                     print("Peer rejected.")
                     continue
 
-                self.jaddr = addr
-                self.running = False  # Stop accepting new peers
+                if self.comm_mode == "P2P":
+                    self.jaddr = addr
+                else:
+                    self.jaddr = ("255.255.255.255",port)
+
+                self.running = False
 
                 seed = -1
                 while seed < 0:
@@ -80,49 +92,35 @@ class host:
 
                 # Send handshake response using KV pairs
                 self.seed = seed
-                handshake = encode_message(
-                    {"message_type": "HANDSHAKE_RESPONSE", "seed": seed}
-                )
-                self.sock.sendto(handshake.encode("utf-8"), addr)
+                handshake = encode_message({"message_type": "HANDSHAKE_RESPONSE", "seed": seed})
+                self.sock.sendto(handshake.encode("utf-8"), self.jaddr)
                 print("Handshake sent.\n")
 
                 listener = threading.Thread(target=self.listen_loop, daemon=True)
                 listener.start()
 
-                # Chat loop continues while listening
-                while self.listening:
+                while True:
                     self.chat()
 
-                self.sock.close()
-                peers.join()
+        self.sock.close()
+        peers.join()
 
-    # loop for accepting peers, ends when the game begins
+    #loop for accepting peers, ends when the game begins
     def _accept_loop(self):
         while self.running:
             try:
-                # Set timeout so we can check self.running periodically
-                self.sock.settimeout(0.5)
                 msg, addr = self.sock.recvfrom(1024)
-                self.sock.settimeout(None)  # Remove timeout
-            except socket.timeout:
-                # Timeout occurred, check if we should continue
-                continue
             except OSError:
                 break
 
-            decoded = msg.decode()
-            kv = decode_message(decoded)
-
-            # Only process handshake requests in accept loop
-            # Let other messages be handled by listen_loop
-            if kv.get("message_type") == "HANDSHAKE_REQUEST":
-                self.request_queue.put((decoded, addr))
+            self.request_queue.put((msg.decode(), addr))
 
     # main listener loop to handle differenet messages
     # pushes message to reliability layer via a queue
     # to get rid of multiple recvfroms populating socket
     def listen_loop(self):
         while self.listening:
+
             try:
                 msg, addr = self.sock.recvfrom(1024)
             except OSError:
@@ -130,7 +128,7 @@ class host:
 
             decoded = msg.decode()
 
-            # if there is a spectator, sends message to it
+            #if there is a spectator, sends message to it
             if self.spect is True:
                 self.reliability.send_with_ack(msg, self.saddr)
             kv = decode_message(decoded)
@@ -149,19 +147,17 @@ class host:
                 if pname:
                     self.opp_mon = self.db.get(pname.lower())
                     if self.opp_mon:
-                        print(
-                            f"[Host] Opponent chose {self.opp_mon.name} (HP {self.opp_mon.current_hp})"
-                        )
+                        print(f"[Host] Opponent chose {self.opp_mon.name} (HP {self.opp_mon.current_hp})")
                     else:
-                        print(
-                            f"[Host] Received BATTLE_SETUP with unknown Pokémon: {pname}"
-                        )
+                        print(f"[Host] Received BATTLE_SETUP with unknown Pokémon: {pname}")
 
                 # Send BATTLE_SETUP to joiner
                 if not self.battle_setup_done and self.jaddr is not None:
                     reply = {
                         "message_type": "BATTLE_SETUP",
+                        "communication_mode": self.comm_mode,
                         "pokemon_name": self.pokemon.name,
+                        "stat_boosts": {"special_attack_uses": 5, "special_defense_uses": 5}
                     }
                     print(f"[Host] Sending BATTLE_SETUP: {reply}")
                     self.reliability.send_with_ack(reply, self.jaddr)
@@ -182,11 +178,9 @@ class host:
                 defender = self.opp_mon
 
                 if attacker is None or defender is None:
-                    print(
-                        "[HOST] Battle not set up correctly (missing attacker/defender)."
-                    )
+                    print("[HOST] Battle not set up correctly (missing attacker/defender).")
                 else:
-                    move = Move(  # Just for test purpose now. Category should come from CSV
+                    move = Move( #Just for test purpose now. Category should come from CSV
                         name=move_name,
                         base_power=1,
                         category="special",
@@ -200,9 +194,7 @@ class host:
                     reported_damage = int(damage_str)
                     reported_hp = int(hp_str)
 
-                    print(
-                        f"[HOST] Local damage = {local_damage}, reported damage = {reported_damage}"
-                    )
+                    print(f"[HOST] Local damage = {local_damage}, reported damage = {reported_damage}")
 
                     if local_damage == reported_damage:
                         # Accept and apply damage
@@ -213,34 +205,12 @@ class host:
                         # Keeping the copy in sync
                         defender.current_hp = state.defender.current_hp
 
-                        # Check for game over using reported HP (joiner's Pokemon fainted)
-                        if reported_hp <= 0 or defender.current_hp <= 0:
-                            print(f"[HOST] {defender.name} fainted!")
+                        # Optional: check for game over
+                        if defender.current_hp <= 0:
+                            print(f"[HOST] {defender.name} fainted! Game over.")
+                    else:
+                        print("[HOST] Damage mismatch! (We can add resolution later.)")
 
-                            game_over_msg = {
-                                "message_type": "GAME_OVER",
-                                "winner": attacker.name,
-                                "loser": defender.name,
-                            }
-
-                            # Use the host.send() helper so spectators get it too
-                            print(f"[HOST] Sending GAME_OVER: {game_over_msg}")
-                            self.send(game_over_msg)
-
-                            # Stop battle loops
-                            self.running = False
-                            self.listening = False
-
-            # Handling incoming GAME_OVER message
-            if kv.get("message_type") == "GAME_OVER":
-                winner = kv.get("winner", "Unknown")
-                loser = kv.get("loser", "Unknown")
-                print(f"[HOST] GAME_OVER: {winner} defeated {loser}")
-
-                self.running = False
-                self.listening = False
-                self.sock.close()
-                break
 
             # Detect and handle multiple message types
             if kv.get("message_type") == "SPECTATOR_REQUEST":
@@ -257,29 +227,31 @@ class host:
                 if incoming_seq == self.seq + 1:
                     self.seq += 1
 
-                # ACK should acknowledge the received sequence number
-                # Always send ACK back to the sender (addr)
-                ackmsg = encode_message(
-                    {"message_type": "ACK", "ack_number": incoming_seq}
-                )
-                print(f"[HOST] Sending ACK {incoming_seq} to {addr}")
-                self.sock.sendto(ackmsg.encode("utf-8"), addr)
+                ackmsg = encode_message({
+                    "message_type": "ACK",
+                    "ack_number": self.seq
+                })
+                if addr == self.jaddr:
+                    self.sock.sendto(ackmsg.encode("utf-8"), self.jaddr)
+                elif self.spect is True:
+                    self.sock.sendto(ackmsg.encode("utf-8"), self.saddr)
 
             if "ack_number" in kv:
                 self.ack = int(kv["ack_number"])
 
     # Helper function to build a move from a name
     def _build_move_from_name(self, move_name: str) -> Move:
-        return Move(  # Just for test purpose now. Category should come from CSV
+        return Move( #Just for test purpose now. Category should come from CSV
             name=move_name,
             base_power=1,
             category="special",
             move_type=self.pokemon.type1.lower(),
         )
 
+
     # Chat function for CHAT_MESSAGE
     def chat(self):
-        msg = input("Type a message (or !attack to attack):\n")
+        msg = input("Commands:\n!attack to attack\n!chat for text message\n!sticker for sticker message\n!defend to defend\n!resolve for resolution request\n")
 
         if msg.strip() == "!attack":
             # Show available moves
@@ -306,23 +278,42 @@ class host:
                 "move_name": move_name,
             }
             print(f"[HOST] Sending ATTACK_ANNOUNCE: {attack_msg}")
-            # Sending ATTACK_ANNOUNCE to the joiner
+            #Sending ATTACK_ANNOUNCE to the joiner
             self.reliability.send_with_ack(attack_msg, self.jaddr)
             return
 
-        # Normal chat message
-        chat_msg = {
-            "message_type": "CHAT_MESSAGE",
-            "sender_name": self.name,
-            "content_type": "TEXT",
-            "message_text": msg,
-        }
-        self.send(chat_msg)
+        if msg.strip() == "!chat":
+            text = input("Type a message: \n")
+            # Normal chat message
+            chat_msg = {
+                "message_type": "CHAT_MESSAGE",
+                "sender_name": self.name,
+                "content_type": "TEXT",
+                "message_text": text,
+            }
+            self.send(chat_msg)
+
+        if msg.strip() == "!sticker":
+            stick = input("Input sticker data: \n")
+            # Normal chat message
+            chat_msg = {
+                "message_type": "CHAT_MESSAGE",
+                "sender_name": self.name,
+                "content_type": "STICKER",
+                "sticker_data": stick,
+            }
+            self.send(chat_msg)
+
+        if msg.strip() == "!defend":
+            print("defender logic here")
+
+        if msg.strip() == "!resolve":
+            print("Resolve logic here")
 
     # host specific function to send data, just checks if there is a spectator
     # and sends the message to it as well
     def send(self, msg):
         self.reliability.send_with_ack(msg, self.jaddr)
 
-        if self.spect is True:
+        if self.spect is True and self.comm_mode == "P2P":
             self.reliability.send_with_ack(msg, self.saddr)
