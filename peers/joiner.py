@@ -48,7 +48,7 @@ class joiner:
 
     def start(self, host_ip, host_port):
         # bind local ephemeral port
-        if self.comm_mode == 1:
+        if self.comm_mode == "P2P":
             self.sock.bind(("", 0))
         else:
             self.sock.bind(("0.0.0.0", host_port))
