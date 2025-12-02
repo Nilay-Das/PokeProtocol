@@ -5,6 +5,7 @@ PokeProtocol - Main entry point for the Pokemon battle protocol application.
 from protocol.pokemon_db import load_pokemon_db
 from peers.host import Host
 from peers.joiner import Joiner
+from peers.spectator import spectator
 
 
 def get_comm_mode() -> str:
@@ -104,6 +105,21 @@ def run_joiner(db: dict):
         print(f"Error connecting: {e}")
 
 
+def run_spectator(db: dict):
+    """
+    Run the spectator peer.
+
+    Args:
+        db: Pokemon database
+    """
+    host_ip, host_port = get_host_connection_info("P2P")
+    spec = spectator()
+    try:
+        spec.start(host_ip, host_port)
+    except Exception as e:
+        print(f"Error connecting spectator: {e}")
+
+
 def main():
     """Main entry point."""
     print("--- PokeProtocol ---")
@@ -111,7 +127,7 @@ def main():
     # Load the database
     db = load_pokemon_db()
 
-    print("h for host\nj for joiner\ns for spectator (not yet implemented)")
+    print("h for host\nj for joiner\ns for spectator")
     choice = input().lower()
 
     if choice == "h":
@@ -119,8 +135,7 @@ def main():
     elif choice == "j":
         run_joiner(db)
     elif choice == "s":
-        print("Spectator mode not yet implemented")
-        # Future: implement spectator
+        run_spectator(db)
     else:
         print("Invalid choice")
 
