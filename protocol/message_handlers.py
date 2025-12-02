@@ -1,304 +1,546 @@
 """
-Message handlers for processing battle protocol messages.
-These handlers are shared between host and joiner peers.
+=============================================================================
+MESSAGE HANDLERS - Processing Protocol Messages
+=============================================================================
+
+WHAT IS THIS FILE?
+------------------
+This file contains functions that handle incoming protocol messages.
+When we receive a message, we need to:
+1. Parse it (extract the data)
+2. Update our game state
+3. Optionally send a response
+
+Each message type has its own handler function.
+
+
+MESSAGE FLOW DIAGRAM
+--------------------
+Here's how messages flow during a typical attack:
+
+    ATTACKER                              DEFENDER
+        |                                     |
+        |---- ATTACK_ANNOUNCE --------------->|
+        |                                     | (handle_attack_announce)
+        |<----------- DEFENSE_ANNOUNCE -------|
+        | (handle_defense_announce)           |
+        |                                     |
+        |---- CALCULATION_REPORT ------------>|
+        |<----------- CALCULATION_REPORT -----|
+        | (handle_calculation_report)         | (handle_calculation_report)
+        |                                     |
+        |---- CALCULATION_CONFIRM ----------->|
+        | (handle_calculation_confirm)        |
+        |                                     |
+        | [Turn switches to DEFENDER]         |
+
+
+FUNCTION NAMING CONVENTION
+--------------------------
+Each function is named: handle_<message_type>
+
+For example:
+- handle_battle_setup() handles BATTLE_SETUP messages
+- handle_attack_announce() handles ATTACK_ANNOUNCE messages
+- etc.
+
+=============================================================================
 """
+
+# We need ast.literal_eval to safely parse dictionary strings
+import ast
+
 from protocol.messages import encode_message
-from protocol.battle_state import Move, BattleState, BattlePhase, calculate_damage, get_damage_category
+from protocol.battle_state import (
+    Move,
+    BattleState,
+    BattlePhase,
+    calculate_damage,
+    get_damage_category,
+    generate_status_message,
+)
+from protocol.message_factory import MessageFactory
+from protocol.constants import MessageType
 
 
-def handle_battle_setup(kv, peer, is_host=True):
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def get_role_name(is_host: bool) -> str:
     """
-    Handle BATTLE_SETUP message from the other peer.
-    Sets up opponent's Pokemon and transitions to battle phase.
+    Get a display name for logging based on whether we're host or joiner.
     
     Args:
-        kv: Decoded message dictionary
-        peer: The peer instance (host or joiner)
-        is_host: Whether this peer is the host
+        is_host: True if we're the host, False if joiner
     
     Returns:
-        dict or None: Response message to send, if any
+        "HOST" or "JOINER"
     """
-    pname = kv.get("pokemon_name")
-    if not pname:
-        return None
-        
-    peer.opp_mon = peer.db.get(pname.lower())
-    if not peer.opp_mon:
-        print(f"[{'Host' if is_host else 'Joiner'}] Received BATTLE_SETUP with unknown Pokémon: {pname}")
-        return None
-        
-    print(f"[{'Host' if is_host else 'Joiner'}] Opponent chose {peer.opp_mon.name} (HP {peer.opp_mon.current_hp})")
-    
-    # Transition to WAITING_FOR_MOVE state
-    peer.battle_manager.battle_phase = BattlePhase.WAITING_FOR_MOVE
-    print(f"[{'HOST' if is_host else 'JOINER'}] Battle setup complete! Entering {peer.battle_manager.battle_phase.value} state.")
-    
     if is_host:
-        print("[HOST] It's your turn! Type !attack to make a move.")
+        return "HOST"
     else:
-        print("[JOINER] Waiting for Host's move...")
+        return "JOINER"
+
+
+def parse_stat_boosts(stat_boosts_str: str) -> tuple:
+    """
+    Parse the stat_boosts string from a BATTLE_SETUP message.
+    
+    The stat_boosts field looks like:
+    {'special_attack_uses': 5, 'special_defense_uses': 5}
+    
+    Args:
+        stat_boosts_str: The stat_boosts value from the message
+    
+    Returns:
+        Tuple of (special_attack_uses, special_defense_uses)
+        Returns (5, 5) if parsing fails
+    """
+    try:
+        # ast.literal_eval safely evaluates a string as a Python literal
+        # This converts the string "{'key': value}" into an actual dictionary
+        stat_boosts_dict = ast.literal_eval(stat_boosts_str)
+        
+        special_attack_uses = int(stat_boosts_dict.get("special_attack_uses", 5))
+        special_defense_uses = int(stat_boosts_dict.get("special_defense_uses", 5))
+        
+        return (special_attack_uses, special_defense_uses)
+    except (ValueError, SyntaxError):
+        # If parsing fails, use default values
+        return (5, 5)
+
+
+# =============================================================================
+# BATTLE_SETUP HANDLER
+# =============================================================================
+
+def handle_battle_setup(kv: dict, peer, is_host: bool = True):
+    """
+    Handle a BATTLE_SETUP message from the opponent.
+    
+    This is called when we receive the opponent's Pokemon information.
+    After this, the battle can begin!
+    
+    What this function does:
+    1. Gets the opponent's Pokemon name from the message
+    2. Looks up that Pokemon in our database
+    3. Stores the opponent's stat boost allocation
+    4. Transitions to the WAITING_FOR_MOVE phase
+    
+    Args:
+        kv: The decoded message dictionary containing:
+            - pokemon_name: Name of opponent's Pokemon
+            - communication_mode: "P2P" or "BROADCAST"
+            - stat_boosts: Dictionary with special_attack_uses and special_defense_uses
+        peer: The peer object (Host or Joiner)
+        is_host: True if we're the host
+    
+    Returns:
+        None (we don't send a response to BATTLE_SETUP)
+    """
+    role = get_role_name(is_host)
+    
+    # Step 1: Get the opponent's Pokemon name
+    pokemon_name = kv.get("pokemon_name")
+    if not pokemon_name:
+        print(f"[{role}] Error: BATTLE_SETUP missing pokemon_name")
+        return None
+    
+    # Step 2: Look up the Pokemon in our database
+    # The database uses lowercase names as keys
+    opponent_pokemon = peer.db.get(pokemon_name.lower())
+    
+    if not opponent_pokemon:
+        print(f"[{role}] Error: Unknown Pokemon '{pokemon_name}'")
+        return None
+    
+    # Store the opponent's Pokemon
+    peer.opp_mon = opponent_pokemon
+    print(f"[{role}] Opponent chose {opponent_pokemon.name} (HP: {opponent_pokemon.current_hp})")
+    
+    # Step 3: Parse and store opponent's stat boosts
+    stat_boosts_str = kv.get("stat_boosts", "")
+    if stat_boosts_str:
+        sp_atk_uses, sp_def_uses = parse_stat_boosts(stat_boosts_str)
+        peer.battle_manager.set_opponent_stat_boosts(sp_atk_uses, sp_def_uses)
+    
+    # Step 4: Transition to battle phase
+    peer.battle_manager.battle_phase = BattlePhase.WAITING_FOR_MOVE
+    print(f"[{role}] Battle setup complete! Ready to battle.")
+    
+    # Tell the user what to do next
+    if is_host:
+        print(f"[{role}] It's your turn! Type !attack to make a move.")
+    else:
+        print(f"[{role}] Waiting for Host's move...")
     
     return None
 
 
-def handle_attack_announce(kv, peer, is_host=True):
+# =============================================================================
+# ATTACK_ANNOUNCE HANDLER
+# =============================================================================
+
+def handle_attack_announce(kv: dict, peer, is_host: bool = True):
     """
-    Handle ATTACK_ANNOUNCE message - opponent is attacking us.
+    Handle an ATTACK_ANNOUNCE message - the opponent is attacking us!
+    
+    This is Step 1 of the attack flow from the defender's perspective.
+    
+    What this function does:
+    1. Parse the move name from the message
+    2. Store the attack information
+    3. Check if we had a defense boost armed
+    4. Calculate the expected damage
+    5. Create DEFENSE_ANNOUNCE and CALCULATION_REPORT responses
     
     Args:
-        kv: Decoded message dictionary
-        peer: The peer instance
-        is_host: Whether this peer is the host
-        
+        kv: The decoded message dictionary containing:
+            - move_name: Name of the move being used
+        peer: The peer object
+        is_host: True if we're the host
+    
     Returns:
-        tuple: (defense_msg, report_msg) to send
+        Tuple of (defense_msg, calculation_report_msg)
+        Both messages need to be sent to the opponent
     """
-    attacker_name = kv.get("attacker_name", "")
-    defender_name = kv.get("defender_name", "")
+    role = get_role_name(is_host)
+    
+    # Step 1: Get the move name
     move_name = kv.get("move_name", "")
     
-    role = "HOST" if is_host else "JOINER"
-    print(f"[{role}] Received ATTACK_ANNOUNCE: {attacker_name} uses {move_name} on {defender_name}")
+    # Figure out who is attacking and defending
+    # Since we RECEIVED this message, the OPPONENT is attacking US
+    attacker = peer.opp_mon      # Opponent's Pokemon
+    defender = peer.pokemon       # Our Pokemon
     
-    # Mapping names to the local Pokémon objects
-    attacker = peer.opp_mon  # Opponent's Pokemon is attacking
-    defender = peer.pokemon  # Our Pokemon is defending
-    
+    # Safety check
     if attacker is None or defender is None:
-        print(f"[{role}] Battle not set up correctly (missing attacker/defender).")
+        print(f"[{role}] Error: Pokemon not set up correctly")
         return None, None
     
-    # Store pending move info
-    peer.battle_manager.pending_attacker = attacker
-    peer.battle_manager.pending_defender = defender
+    print(f"[{role}] Received ATTACK_ANNOUNCE: {attacker.name} uses {move_name} on {defender.name}")
     
-    # Create the move with damage category based on type
+    # Step 2: Store the attack information in the battle manager
+    battle_manager = peer.battle_manager
+    battle_manager.pending_attacker = attacker
+    battle_manager.pending_defender = defender
+    
+    # Create a Move object for damage calculation
+    # The move type is based on the attacker's primary type
     move_type = attacker.type1.lower()
     damage_category = get_damage_category(move_type)
-    peer.battle_manager.pending_move = Move(
+    
+    battle_manager.pending_move = Move(
         name=move_name,
         base_power=1,
         category=damage_category,
         move_type=move_type,
     )
     
-    # Send DEFENSE_ANNOUNCE to confirm receipt
-    defense_msg = {
-        "message_type": "DEFENSE_ANNOUNCE",
-        "defender_name": defender.name,
-        "acknowledged_move": move_name,
-    }
-    print(f"[{role}] Sending DEFENSE_ANNOUNCE: {defense_msg}")
+    # Step 3: Create DEFENSE_ANNOUNCE to confirm we received the attack
+    defense_message = MessageFactory.defense_announce()
+    print(f"[{role}] Sending DEFENSE_ANNOUNCE")
     
-    # Transition to PROCESSING_TURN
-    peer.battle_manager.battle_phase = BattlePhase.PROCESSING_TURN
-    print(f"[{role}] Entering {peer.battle_manager.battle_phase.value} state.")
+    # Transition to PROCESSING_TURN phase
+    battle_manager.battle_phase = BattlePhase.PROCESSING_TURN
+    print(f"[{role}] Entering PROCESSING_TURN state")
     
-    # Calculate damage locally (don't apply yet)
-    state = BattleState(attacker=attacker, defender=defender)
+    # Step 4: Check if we had armed a defense boost
+    battle_manager.consume_armed_defense_boost()
+    defense_multiplier = battle_manager.get_defense_multiplier()
+    
+    # Step 5: Calculate the damage
     print(f"[{role}] Before attack: {defender.name} HP = {defender.current_hp}")
-    damage = calculate_damage(state, peer.battle_manager.pending_move)
     
-    # Store calculation for comparison
-    peer.battle_manager.my_calculation = {
+    battle_state = BattleState(attacker=attacker, defender=defender)
+    damage = calculate_damage(
+        battle_state,
+        battle_manager.pending_move,
+        attack_boost=1.0,  # We don't know if opponent used attack boost
+        defense_boost=defense_multiplier,
+    )
+    
+    # Calculate defender's HP after damage (minimum 0)
+    defender_hp_remaining = defender.current_hp - damage
+    if defender_hp_remaining < 0:
+        defender_hp_remaining = 0
+    
+    # Store our calculation for later comparison
+    battle_manager.my_calculation = {
         "damage": damage,
-        "remaining_hp": defender.current_hp - damage if defender.current_hp - damage > 0 else 0
+        "remaining_hp": defender_hp_remaining,
     }
     print(f"[{role}] Calculated damage: {damage}")
     
-    # Send CALCULATION_REPORT
-    report = {
-        "message_type": "CALCULATION_REPORT",
-        "attacker_name": attacker.name,
-        "defender_name": defender.name,
-        "move_name": peer.battle_manager.pending_move.name,
-        "damage_dealt": str(damage),
-        "defender_hp_remaining": str(peer.battle_manager.my_calculation["remaining_hp"]),
-    }
-    print(f"[{role}] Sending CALCULATION_REPORT: {report}")
+    # Step 6: Create CALCULATION_REPORT with our calculation
+    calculation_report = battle_manager.create_calculation_report(
+        attacker, defender, damage
+    )
+    print(f"[{role}] Sending CALCULATION_REPORT")
     
-    return defense_msg, report
+    return defense_message, calculation_report
 
 
-def handle_defense_announce(kv, peer, is_host=True):
+# =============================================================================
+# DEFENSE_ANNOUNCE HANDLER
+# =============================================================================
+
+def handle_defense_announce(kv: dict, peer, is_host: bool = True):
     """
-    Handle DEFENSE_ANNOUNCE message - defender acknowledged the attack.
+    Handle a DEFENSE_ANNOUNCE message - opponent acknowledged our attack.
+    
+    This is Step 2 of the attack flow from the attacker's perspective.
+    
+    What this function does:
+    1. Confirm the opponent received our attack
+    2. Calculate the damage (now that we know defense was acknowledged)
+    3. Create CALCULATION_REPORT with our calculation
     
     Args:
-        kv: Decoded message dictionary
-        peer: The peer instance
-        is_host: Whether this peer is the host
-        
+        kv: The decoded message (only contains message_type)
+        peer: The peer object
+        is_host: True if we're the host
+    
     Returns:
-        dict or None: CALCULATION_REPORT message to send
+        CALCULATION_REPORT message to send
     """
-    defender_name = kv.get("defender_name", "")
-    acknowledged_move = kv.get("acknowledged_move", "")
-    role = "HOST" if is_host else "JOINER"
+    role = get_role_name(is_host)
+    battle_manager = peer.battle_manager
     
-    print(f"[{role}] Received DEFENSE_ANNOUNCE: {defender_name} acknowledged {acknowledged_move}")
-    
-    # Transition to PROCESSING_TURN
-    peer.battle_manager.battle_phase = BattlePhase.PROCESSING_TURN
-    print(f"[{role}] Entering {peer.battle_manager.battle_phase.value} state.")
-    
-    bm = peer.battle_manager
-    if bm.pending_attacker and bm.pending_defender and bm.pending_move:
-        state = BattleState(attacker=bm.pending_attacker, defender=bm.pending_defender)
-        damage = calculate_damage(state, bm.pending_move)
-        remaining_hp = bm.pending_defender.current_hp - damage
-        if remaining_hp < 0:
-            remaining_hp = 0
-        
-        # Store calculation for comparison
-        bm.my_calculation = {
-            "damage": damage,
-            "remaining_hp": remaining_hp
-        }
-        print(f"[{role}] Calculated damage: {damage}, remaining HP: {remaining_hp}")
-        
-        # Send CALCULATION_REPORT
-        report = {
-            "message_type": "CALCULATION_REPORT",
-            "attacker_name": bm.pending_attacker.name,
-            "defender_name": bm.pending_defender.name,
-            "move_name": bm.pending_move.name,
-            "damage_dealt": str(damage),
-            "defender_hp_remaining": str(remaining_hp),
-        }
-        print(f"[{role}] Sending CALCULATION_REPORT: {report}")
-        return report
+    # Get the move name from our stored state
+    if battle_manager.pending_move:
+        move_name = battle_manager.pending_move.name
     else:
-        print(f"[{role}] Error: No pending move info for calculation")
+        move_name = "Unknown"
+    
+    # Get defender name from our stored state
+    if peer.opp_mon:
+        defender_name = peer.opp_mon.name
+    else:
+        defender_name = "Unknown"
+    
+    print(f"[{role}] Received DEFENSE_ANNOUNCE: {defender_name} acknowledged {move_name}")
+    
+    # Transition to PROCESSING_TURN phase
+    battle_manager.battle_phase = BattlePhase.PROCESSING_TURN
+    print(f"[{role}] Entering PROCESSING_TURN state")
+    
+    # Make sure we have all the info we need
+    if not battle_manager.pending_attacker:
+        print(f"[{role}] Error: No attacker stored")
         return None
+    if not battle_manager.pending_defender:
+        print(f"[{role}] Error: No defender stored")
+        return None
+    if not battle_manager.pending_move:
+        print(f"[{role}] Error: No move stored")
+        return None
+    
+    # Calculate damage with our attack boost (if we used one)
+    attacker = battle_manager.pending_attacker
+    defender = battle_manager.pending_defender
+    
+    battle_state = BattleState(attacker=attacker, defender=defender)
+    attack_multiplier = battle_manager.get_attack_multiplier()
+    
+    damage = calculate_damage(
+        battle_state,
+        battle_manager.pending_move,
+        attack_boost=attack_multiplier,
+        defense_boost=1.0,  # We don't know if opponent used defense boost
+    )
+    
+    # Calculate defender's HP after damage (minimum 0)
+    defender_hp_remaining = defender.current_hp - damage
+    if defender_hp_remaining < 0:
+        defender_hp_remaining = 0
+    
+    # Store our calculation for later comparison
+    battle_manager.my_calculation = {
+        "damage": damage,
+        "remaining_hp": defender_hp_remaining,
+    }
+    print(f"[{role}] Calculated damage: {damage}, remaining HP: {defender_hp_remaining}")
+    
+    # Create CALCULATION_REPORT with our calculation
+    calculation_report = battle_manager.create_calculation_report(
+        attacker, defender, damage
+    )
+    print(f"[{role}] Sending CALCULATION_REPORT")
+    
+    return calculation_report
 
 
-def handle_calculation_report(kv, peer, is_host=True):
+# =============================================================================
+# CALCULATION_REPORT HANDLER
+# =============================================================================
+
+def handle_calculation_report(kv: dict, peer, is_host: bool = True):
     """
-    Handle incoming CALCULATION_REPORT - compare with our calculation.
+    Handle a CALCULATION_REPORT - compare opponent's calculation with ours.
+    
+    This is Step 3 of the attack flow.
+    
+    What this function does:
+    1. Parse the opponent's damage calculation from the message
+    2. Compare their calculation with ours
+    3. If they match: send CALCULATION_CONFIRM and apply damage
+    4. If they differ: send RESOLUTION_REQUEST
     
     Args:
-        kv: Decoded message dictionary
-        peer: The peer instance
-        is_host: Whether this peer is the host
-        
+        kv: The decoded message containing:
+            - attacker: Name of attacking Pokemon
+            - move_used: Name of move
+            - remaining_health: Attacker's HP
+            - damage_dealt: Calculated damage
+            - defender_hp_remaining: Defender's HP after damage
+            - status_message: Battle description
+        peer: The peer object
+        is_host: True if we're the host
+    
     Returns:
-        tuple: (response_msg, game_over_msg or None, should_stop)
+        Tuple of (response_msg, game_over_msg_or_None, should_stop_battle)
     """
-    role = "HOST" if is_host else "JOINER"
+    role = get_role_name(is_host)
+    battle_manager = peer.battle_manager
     
-    attacker_name = kv.get("attacker_name", "")
-    defender_name = kv.get("defender_name", "")
-    move_name = kv.get("move_name", "")
-    damage_str = kv.get("damage_dealt", "0")
-    hp_str = kv.get("defender_hp_remaining", "0")
+    # Step 1: Parse opponent's calculation from the message
+    attacker_name = kv.get("attacker", "")
+    move_name = kv.get("move_used", "")
+    attacker_hp = kv.get("remaining_health", "0")
+    damage_string = kv.get("damage_dealt", "0")
+    hp_remaining_string = kv.get("defender_hp_remaining", "0")
+    status_message = kv.get("status_message", "")
     
-    print(f"[{role}] Received CALCULATION_REPORT: {kv}")
+    print(f"[{role}] Received CALCULATION_REPORT:")
+    print(f"[{role}]   Attacker: {attacker_name}")
+    print(f"[{role}]   Move: {move_name}")
+    print(f"[{role}]   Damage: {damage_string}")
+    print(f"[{role}]   Defender HP remaining: {hp_remaining_string}")
     
-    reported_damage = int(damage_str)
-    reported_hp = int(hp_str)
+    if status_message:
+        print(f"[{role}]   Status: {status_message}")
     
-    bm = peer.battle_manager
+    # Convert strings to integers
+    reported_damage = int(damage_string)
+    reported_hp_remaining = int(hp_remaining_string)
     
-    if not bm.my_calculation:
+    # Step 2: Get our calculation for comparison
+    if not battle_manager.my_calculation:
         print(f"[{role}] Warning: No local calculation to compare against")
         return None, None, False
     
-    local_damage = bm.my_calculation["damage"]
-    local_remaining_hp = bm.my_calculation["remaining_hp"]
+    our_damage = battle_manager.my_calculation["damage"]
+    our_hp_remaining = battle_manager.my_calculation["remaining_hp"]
     
-    print(f"[{role}] Local damage = {local_damage}, reported damage = {reported_damage}")
-    print(f"[{role}] Local remaining HP = {local_remaining_hp}, reported HP = {reported_hp}")
+    print(f"[{role}] Our calculation: damage={our_damage}, HP remaining={our_hp_remaining}")
+    print(f"[{role}] Their calculation: damage={reported_damage}, HP remaining={reported_hp_remaining}")
     
-    if local_damage == reported_damage and local_remaining_hp == reported_hp:
-        # Calculations match - send CALCULATION_CONFIRM
-        confirm_msg = {
-            "message_type": "CALCULATION_CONFIRM",
-            "damage_confirmed": str(local_damage),
-            "remaining_health": str(local_remaining_hp),
-        }
-        print(f"[{role}] Calculations match! Sending CALCULATION_CONFIRM: {confirm_msg}")
+    # Step 3: Compare calculations
+    damage_matches = (our_damage == reported_damage)
+    hp_matches = (our_hp_remaining == reported_hp_remaining)
+    
+    if damage_matches and hp_matches:
+        # Calculations match! Send CALCULATION_CONFIRM
+        print(f"[{role}] Calculations MATCH!")
         
-        # Apply damage to the defender
-        if bm.pending_defender:
-            bm.pending_defender.current_hp = local_remaining_hp
-            print(f"[{role}] Applied damage. {bm.pending_defender.name} HP is now {bm.pending_defender.current_hp}")
+        confirm_message = MessageFactory.calculation_confirm()
         
-        # Check for game over
-        if local_remaining_hp <= 0 and bm.pending_defender:
-            print(f"[{role}] {bm.pending_defender.name} fainted!")
-            game_over_msg = {
-                "message_type": "GAME_OVER",
-                "winner": bm.pending_attacker.name if bm.pending_attacker else "Unknown",
-                "loser": bm.pending_defender.name,
-            }
-            print(f"[{role}] Sending GAME_OVER: {game_over_msg}")
-            return confirm_msg, game_over_msg, True
+        # Apply the damage to the defender
+        if battle_manager.pending_defender:
+            battle_manager.pending_defender.current_hp = our_hp_remaining
+            print(f"[{role}] Applied damage. {battle_manager.pending_defender.name} HP is now {our_hp_remaining}")
         
-        return confirm_msg, None, False
+        # Check if the defender fainted (game over)
+        if our_hp_remaining <= 0 and battle_manager.pending_defender:
+            print(f"[{role}] {battle_manager.pending_defender.name} fainted!")
+            game_over_message = battle_manager.create_game_over_message()
+            print(f"[{role}] Sending GAME_OVER")
+            return confirm_message, game_over_message, True
+        
+        return confirm_message, None, False
+    
     else:
-        # Calculations don't match - send RESOLUTION_REQUEST
-        resolution_msg = {
-            "message_type": "RESOLUTION_REQUEST",
-            "calculated_damage": str(local_damage),
-            "calculated_remaining_hp": str(local_remaining_hp),
-            "attacker_stat": str(
-                bm.pending_attacker.attack 
-                if bm.pending_move and bm.pending_move.category == "physical" 
-                else bm.pending_attacker.special_attack
-            ) if bm.pending_attacker else "0",
-            "defender_stat": str(
-                bm.pending_defender.physical_defense 
-                if bm.pending_move and bm.pending_move.category == "physical" 
-                else bm.pending_defender.special_defense
-            ) if bm.pending_defender else "0",
-            "type_multiplier": str(
-                bm.pending_defender.type_multipliers.get(bm.pending_move.move_type, 1.0)
-            ) if bm.pending_defender and bm.pending_move else "1.0",
-        }
-        print(f"[{role}] Calculations DON'T match! Sending RESOLUTION_REQUEST: {resolution_msg}")
-        return resolution_msg, None, False
+        # Calculations don't match! Send RESOLUTION_REQUEST
+        print(f"[{role}] Calculations DON'T MATCH!")
+        
+        # Get attacker and move names for the resolution request
+        if battle_manager.pending_attacker:
+            attacker_name_for_resolution = battle_manager.pending_attacker.name
+        else:
+            attacker_name_for_resolution = "Unknown"
+        
+        if battle_manager.pending_move:
+            move_name_for_resolution = battle_manager.pending_move.name
+        else:
+            move_name_for_resolution = "Unknown"
+        
+        resolution_message = MessageFactory.resolution_request(
+            attacker_name=attacker_name_for_resolution,
+            move_used=move_name_for_resolution,
+            damage_dealt=our_damage,
+            defender_hp_remaining=our_hp_remaining,
+        )
+        print(f"[{role}] Sending RESOLUTION_REQUEST with our values")
+        
+        return resolution_message, None, False
 
 
-def handle_calculation_confirm(kv, peer, is_host=True):
+# =============================================================================
+# CALCULATION_CONFIRM HANDLER
+# =============================================================================
+
+def handle_calculation_confirm(kv: dict, peer, is_host: bool = True):
     """
-    Handle CALCULATION_CONFIRM - apply the confirmed damage and switch turns.
+    Handle a CALCULATION_CONFIRM - opponent agrees with the damage calculation.
+    
+    This is Step 4 of the attack flow.
+    
+    What this function does:
+    1. Apply the agreed-upon damage
+    2. Check if defender fainted (game over)
+    3. Switch turns if battle continues
     
     Args:
-        kv: Decoded message dictionary
-        peer: The peer instance
-        is_host: Whether this peer is the host
-        
+        kv: The decoded message (only contains message_type)
+        peer: The peer object
+        is_host: True if we're the host
+    
     Returns:
-        bool: True if game should continue, False if game over
+        True if the game should continue, False if it's game over
     """
-    role = "HOST" if is_host else "JOINER"
+    role = get_role_name(is_host)
+    battle_manager = peer.battle_manager
     
-    damage_confirmed = kv.get("damage_confirmed", "0")
-    remaining_health = kv.get("remaining_health", "0")
+    # Get our stored calculation (both peers agreed on this)
+    if not battle_manager.my_calculation:
+        print(f"[{role}] Warning: No calculation stored")
+        return True
     
-    print(f"[{role}] Received CALCULATION_CONFIRM: damage={damage_confirmed}, remaining_hp={remaining_health}")
+    our_damage = battle_manager.my_calculation["damage"]
+    our_hp_remaining = battle_manager.my_calculation["remaining_hp"]
     
-    bm = peer.battle_manager
+    print(f"[{role}] Received CALCULATION_CONFIRM")
+    print(f"[{role}] Applying confirmed damage: {our_damage}")
     
-    # Apply damage
-    if bm.pending_defender:
-        bm.pending_defender.current_hp = int(remaining_health)
-        print(f"[{role}] Applied confirmed damage. {bm.pending_defender.name} HP is now {bm.pending_defender.current_hp}")
+    # Apply the damage to the defender
+    if battle_manager.pending_defender:
+        battle_manager.pending_defender.current_hp = our_hp_remaining
+        defender_name = battle_manager.pending_defender.name
+        print(f"[{role}] {defender_name} HP is now {our_hp_remaining}")
     
-    # Check for game over
-    if int(remaining_health) <= 0 and bm.pending_defender:
-        print(f"[{role}] {bm.pending_defender.name} fainted!")
+    # Check if the defender fainted
+    if our_hp_remaining <= 0 and battle_manager.pending_defender:
+        print(f"[{role}] {battle_manager.pending_defender.name} fainted!")
         return False  # Game over
     
-    # Switch turns and return to WAITING_FOR_MOVE
-    bm.is_my_turn = not bm.is_my_turn
-    bm.battle_phase = BattlePhase.WAITING_FOR_MOVE
-    bm.pending_move = None
-    bm.my_calculation = None
+    # Switch turns
+    battle_manager.switch_turn()
     
-    if bm.is_my_turn:
+    # Tell the user what's happening
+    if battle_manager.is_my_turn:
         print(f"[{role}] Turn switched! It's your turn. Type !attack to make a move.")
     else:
         print(f"[{role}] Turn switched! Waiting for opponent's move...")
@@ -306,67 +548,82 @@ def handle_calculation_confirm(kv, peer, is_host=True):
     return True  # Game continues
 
 
-def handle_resolution_request(kv, peer, is_host=True):
+# =============================================================================
+# RESOLUTION_REQUEST HANDLER
+# =============================================================================
+
+def handle_resolution_request(kv: dict, peer, is_host: bool = True):
     """
-    Handle RESOLUTION_REQUEST - other peer's calculation didn't match.
+    Handle a RESOLUTION_REQUEST - calculations didn't match, need to resolve.
+    
+    This happens when the two peers calculated different damage values.
+    We accept the opponent's calculation and continue.
+    
+    What this function does:
+    1. Parse opponent's calculation from the message
+    2. Apply their damage value (accept their calculation)
+    3. Check if defender fainted
+    4. Switch turns if battle continues
     
     Args:
-        kv: Decoded message dictionary
-        peer: The peer instance
-        is_host: Whether this peer is the host
-        
+        kv: The decoded message containing:
+            - attacker: Name of attacking Pokemon
+            - move_used: Name of move
+            - damage_dealt: Their calculated damage
+            - defender_hp_remaining: Their calculated remaining HP
+        peer: The peer object
+        is_host: True if we're the host
+    
     Returns:
-        tuple: (game_over_msg or None, should_stop, is_fatal_error)
+        Tuple of (game_over_msg_or_None, should_stop, is_fatal_error)
     """
-    role = "HOST" if is_host else "JOINER"
+    role = get_role_name(is_host)
+    battle_manager = peer.battle_manager
     
-    their_damage = kv.get("calculated_damage", "0")
-    their_remaining_hp = kv.get("calculated_remaining_hp", "0")
-    their_atk_stat = kv.get("attacker_stat", "0")
-    their_def_stat = kv.get("defender_stat", "0")
-    their_multiplier = kv.get("type_multiplier", "1.0")
+    # Parse their calculation
+    attacker_name = kv.get("attacker", "Unknown")
+    move_name = kv.get("move_used", "Unknown")
+    their_damage_string = kv.get("damage_dealt", "0")
+    their_hp_remaining_string = kv.get("defender_hp_remaining", "0")
     
-    print(f"[{role}] Received RESOLUTION_REQUEST: {kv}")
-    print(f"[{role}] Their values - damage: {their_damage}, remaining_hp: {their_remaining_hp}")
-    print(f"[{role}] Their stats - atk: {their_atk_stat}, def: {their_def_stat}, multiplier: {their_multiplier}")
+    print(f"[{role}] Received RESOLUTION_REQUEST")
+    print(f"[{role}]   Their damage: {their_damage_string}")
+    print(f"[{role}]   Their HP remaining: {their_hp_remaining_string}")
     
-    bm = peer.battle_manager
-    
-    if not bm.my_calculation:
-        print(f"[{role}] Error: Received RESOLUTION_REQUEST but no local calculation exists")
+    # Check that we have a local calculation to compare
+    if not battle_manager.my_calculation:
+        print(f"[{role}] ERROR: No local calculation exists!")
         print(f"[{role}] FATAL: Battle state inconsistent. Terminating.")
         return None, True, True  # Fatal error
     
-    print(f"[{role}] Our values - damage: {bm.my_calculation['damage']}, remaining_hp: {bm.my_calculation['remaining_hp']}")
+    # Log our calculation for debugging
+    print(f"[{role}]   Our damage: {battle_manager.my_calculation['damage']}")
+    print(f"[{role}]   Our HP remaining: {battle_manager.my_calculation['remaining_hp']}")
     
-    # Accept their calculation and update state
-    their_damage_int = int(their_damage)
-    their_hp_int = int(their_remaining_hp)
+    # Accept their calculation
+    their_damage = int(their_damage_string)
+    their_hp_remaining = int(their_hp_remaining_string)
     
-    print(f"[{role}] Accepting resolution values. Applying damage: {their_damage_int}")
+    print(f"[{role}] Accepting their values")
     
-    if bm.pending_defender:
-        bm.pending_defender.current_hp = their_hp_int
-        print(f"[{role}] {bm.pending_defender.name} HP is now {their_hp_int}")
+    # Apply their damage
+    if battle_manager.pending_defender:
+        battle_manager.pending_defender.current_hp = their_hp_remaining
+        defender_name = battle_manager.pending_defender.name
+        print(f"[{role}] {defender_name} HP is now {their_hp_remaining}")
     
-    # Check for game over
-    if their_hp_int <= 0 and bm.pending_defender:
-        print(f"[{role}] {bm.pending_defender.name} fainted!")
-        game_over_msg = {
-            "message_type": "GAME_OVER",
-            "winner": bm.pending_attacker.name if bm.pending_attacker else "Unknown",
-            "loser": bm.pending_defender.name,
-        }
-        print(f"[{role}] Sending GAME_OVER: {game_over_msg}")
-        return game_over_msg, True, False
+    # Check if the defender fainted
+    if their_hp_remaining <= 0 and battle_manager.pending_defender:
+        print(f"[{role}] {battle_manager.pending_defender.name} fainted!")
+        game_over_message = battle_manager.create_game_over_message()
+        print(f"[{role}] Sending GAME_OVER")
+        return game_over_message, True, False
     
     # Switch turns
-    bm.is_my_turn = not bm.is_my_turn
-    bm.battle_phase = BattlePhase.WAITING_FOR_MOVE
-    bm.pending_move = None
-    bm.my_calculation = None
+    battle_manager.switch_turn()
     
-    if bm.is_my_turn:
+    # Tell the user what's happening
+    if battle_manager.is_my_turn:
         print(f"[{role}] Resolution accepted. It's your turn. Type !attack to make a move.")
     else:
         print(f"[{role}] Resolution accepted. Waiting for opponent's move...")
@@ -374,18 +631,31 @@ def handle_resolution_request(kv, peer, is_host=True):
     return None, False, False
 
 
-def handle_game_over(kv, peer, is_host=True):
+# =============================================================================
+# GAME_OVER HANDLER
+# =============================================================================
+
+def handle_game_over(kv: dict, peer, is_host: bool = True):
     """
-    Handle GAME_OVER message.
+    Handle a GAME_OVER message - the battle has ended!
+    
+    What this function does:
+    1. Parse the winner and loser names
+    2. Display the result
     
     Args:
-        kv: Decoded message dictionary
-        peer: The peer instance
-        is_host: Whether this peer is the host
+        kv: The decoded message containing:
+            - winner: Name of the winning Pokemon
+            - loser: Name of the losing Pokemon
+        peer: The peer object
+        is_host: True if we're the host
     """
-    role = "HOST" if is_host else "JOINER"
+    role = get_role_name(is_host)
     
     winner = kv.get("winner", "Unknown")
     loser = kv.get("loser", "Unknown")
-    print(f"[{role}] GAME_OVER: {winner} defeated {loser}")
-
+    
+    print(f"[{role}] ========================================")
+    print(f"[{role}] GAME OVER!")
+    print(f"[{role}] {winner} defeated {loser}!")
+    print(f"[{role}] ========================================")

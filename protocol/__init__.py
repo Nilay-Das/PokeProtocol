@@ -14,6 +14,8 @@ from protocol.battle_state import (
 )
 from protocol.pokemon_db import load_pokemon_db
 from protocol.battle_manager import BattleManager
+from protocol.message_factory import MessageFactory
+from protocol.constants import MessageType, ContentType, CommunicationMode
 
 __all__ = [
     "encode_message",
@@ -27,4 +29,8 @@ __all__ = [
     "apply_damage",
     "load_pokemon_db",
     "BattleManager",
+    "MessageFactory",
+    "MessageType",
+    "ContentType",
+    "CommunicationMode",
 ]
