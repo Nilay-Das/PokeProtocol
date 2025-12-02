@@ -33,4 +33,12 @@ Note: Spectators cannot use !attack, they can only send chats to the host
 
 All connections close once either the host or joiner faints.  
 All other functions such as CALCULATION_REPORT, DEFENSE_ANNOUNCE, etc. are handled automatically and do not require User Input  
-If choosing Broadcast as your mode of communication, entering a host IP is ommitted and you are automically bound to 0.0.0.0 and will send to 255.255.255.255
+If choosing Broadcast as your mode of communication, entering a host IP is ommitted and you are automically bound to 0.0.0.0 and will send to 255.255.255.255  
+  
+**AI DECLARATION**  
+We as a group have used AI for the following:  
+Initial brainstorming of how battle states should work  
+Structure of the files (Base Peer Class, Message Factory)
+Summarization of the socket library documentation (asking ChatGPT what a specific function does)  
+Creation of test cases (exception handling for user input, simulation of disconnects and possible issues that may arise while running)    
+Asking for sources of similar projects/examples of UDP connection programs online  
