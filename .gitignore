@@ -1,0 +1,17 @@
+__pycache__/
+
+venv/
+.venv/
+env/
+.env/
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+
+*.log
+*.tmp
