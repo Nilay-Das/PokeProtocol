@@ -1,71 +1,129 @@
-from protocol.battle_state import Move, BattleState, calculate_damage, apply_damage
+"""
+PokeProtocol - Main entry point for the Pokemon battle protocol application.
+"""
+
 from protocol.pokemon_db import load_pokemon_db
+from peers.host import Host
+from peers.joiner import Joiner
 
-from peers.host import host
-from peers.joiner import joiner
-#.from peers.spectator import spectator
 
-print("--- PokeProtocol ---")
+def get_comm_mode() -> str:
+    """
+    Get communication mode from user input.
 
-# Load the database
-db = load_pokemon_db()
-comm_mode = 0
-pk = 0
-#spectator = spectator()
-print("h for host\nj for joiner\ns for spectator(not yet implemented)")
-choice = input().lower()
-
-if choice == "h":
-    while comm_mode != 1 and comm_mode != 2:
-        comm_mode = int(input("Choose your mode of communication: \n(1 for P2P)(2 for Broadcast)\n"))
-        if comm_mode != 1 and comm_mode != 2:
-            print("Please choose a mode of communication")
-
-    while pk <= 0 or pk > 801:
-        pk = int(input("Enter the pokedex ID of your chosen pokemon (1-801)\n"))
-        if pk > 0 and pk <= 801:
-            break
-        else:
-            print("Invalid pokedex ID")
-
-    if comm_mode == 1:
-        # initialize host as P2P
-        host = host(db[pk],db,"P2P")
-        host.accept()
-    else:
-        # initialize host as BROADCAST
-        host = host(db[pk],db,"BROADCAST")
-        host.accept()
-
-if choice == "j":
-    while comm_mode != 1 and comm_mode != 2:
-        comm_mode = int(input("Choose your mode of communication: \n(1 for P2P)(2 for Broadcast)\n"))
-        if comm_mode != 1 and comm_mode != 2:
-            print("Please choose a mode of communication")
-
-    while pk <= 0 or pk > 801:
-        pk = int(input("Enter the pokedex ID of your chosen pokemon (1-801)\n"))
-        if pk > 0 and pk <= 801:
-            break
-        else:
-            print("Invalid pokedex ID")
-
-    if comm_mode == 1:
-        hIP = str(input("Enter host IP: "))
-        hPort = int(input("Enter host port: "))
-        joiner = joiner(db[pk], db, "P2P")
+    Returns:
+        "P2P" or "BROADCAST"
+    """
+    while True:
         try:
-            joiner.start(hIP, hPort)
-        except:
-            print("Invalid IP or port")
-    else:
-        hPort = int(input("Enter host port: "))
-        joiner = joiner(db[pk], db, "BROADCAST")
+            choice = int(
+                input(
+                    "Choose your mode of communication: \n(1 for P2P)(2 for Broadcast)\n"
+                )
+            )
+            if choice == 1:
+                return "P2P"
+            elif choice == 2:
+                return "BROADCAST"
+            else:
+                print("Please choose a valid mode of communication (1 or 2)")
+        except ValueError:
+            print("Please enter a valid number")
+
+
+def get_pokemon_id() -> int:
+    """
+    Get Pokemon ID from user input.
+
+    Returns:
+        Valid Pokedex ID (1-801)
+    """
+    while True:
         try:
-            joiner.start("255.255.255.255", hPort)
-        except:
-            print("Invalid IP or port")
-if choice == "s":
-    hIP = input("Enter host IP: ")
-    hPort = input("Enter host port: ")
-    #spectator.start(hIP, hPort)
+            pk = int(input("Enter the pokedex ID of your chosen pokemon (1-801)\n"))
+            if 1 <= pk <= 801:
+                return pk
+            else:
+                print("Invalid pokedex ID. Please enter a number between 1 and 801.")
+        except ValueError:
+            print("Please enter a valid number")
+
+
+def get_host_connection_info(comm_mode: str) -> tuple:
+    """
+    Get host connection info from user.
+
+    Args:
+        comm_mode: "P2P" or "BROADCAST"
+
+    Returns:
+        Tuple of (host_ip, host_port)
+    """
+    if comm_mode == "P2P":
+        host_ip = input("Enter host IP: ")
+    else:
+        host_ip = "255.255.255.255"
+
+    while True:
+        try:
+            host_port = int(input("Enter host port: "))
+            return host_ip, host_port
+        except ValueError:
+            print("Please enter a valid port number")
+
+
+def run_host(db: dict):
+    """
+    Run the host peer.
+
+    Args:
+        db: Pokemon database
+    """
+    comm_mode = get_comm_mode()
+    pk_id = get_pokemon_id()
+
+    host = Host(db[pk_id], db, comm_mode)
+    host.accept()
+
+
+def run_joiner(db: dict):
+    """
+    Run the joiner peer.
+
+    Args:
+        db: Pokemon database
+    """
+    comm_mode = get_comm_mode()
+    pk_id = get_pokemon_id()
+    host_ip, host_port = get_host_connection_info(comm_mode)
+
+    joiner = Joiner(db[pk_id], db, comm_mode)
+    try:
+        joiner.start(host_ip, host_port)
+    except Exception as e:
+        print(f"Error connecting: {e}")
+
+
+def main():
+    """Main entry point."""
+    print("--- PokeProtocol ---")
+
+    # Load the database
+    db = load_pokemon_db()
+
+    print("h for host\nj for joiner\ns for spectator (not yet implemented)")
+    choice = input().lower()
+
+    if choice == "h":
+        run_host(db)
+    elif choice == "j":
+        run_joiner(db)
+    elif choice == "s":
+        print("Spectator mode not yet implemented")
+        # Future: implement spectator
+    else:
+        print("Invalid choice")
+
+
+if __name__ == "__main__":
+    main()
