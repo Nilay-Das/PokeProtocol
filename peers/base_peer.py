@@ -340,7 +340,7 @@ class BasePeer:
         # show commands
         print("\nCommands:")
         print("  !attack  - Attack the opponent")
-        print("  !defend  - Arm defense boost for next attack")
+        # print("  !defend  - Arm defense boost for next attack")
         print("  !chat    - Send a text message")
         print("  !sticker - Send a sticker")
 
@@ -350,13 +350,13 @@ class BasePeer:
         if command == "!attack":
             self.perform_attack()
 
-        elif command == "!defend":
-            if bm.is_my_turn:
-                print(
-                    "You can only arm defense boost when waiting for opponent's attack."
-                )
-            else:
-                bm.arm_defense_boost()
+        # elif command == "!defend":
+        #     if bm.is_my_turn:
+        #         print(
+        #             "You can only arm defense boost when waiting for opponent's attack."
+        #         )
+        #     else:
+        #         bm.arm_defense_boost()
 
         elif command == "!chat":
             text = input("Type your message: ")
