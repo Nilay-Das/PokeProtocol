@@ -26,6 +26,7 @@ class Joiner(BasePeer):
         if self.comm_mode == "P2P":
             self.sock.bind(("", 0))
         else:
+            self.host_ip = "255.255.255.255"
             self.sock.bind(("0.0.0.0", host_port))
         
         # get name
